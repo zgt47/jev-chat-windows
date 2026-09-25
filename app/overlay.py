@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 """浅色置顶回复助手：回复建议和独立设置页。发送始终由用户确认。"""
-import os
-import sys
 import threading
 from datetime import datetime
 from math import isfinite
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QSizeGrip, QSizePolicy,
+    QApplication, QFrame, QHBoxLayout, QPushButton, QSizeGrip, QSizePolicy,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
@@ -20,7 +18,7 @@ from qfluentwidgets import (
     setCustomStyleSheet, setFont, setTheme, setThemeColor,
 )
 
-from app import settings
+from app import chat_profiles, settings
 from app.version import VERSION
 from core import jev_client, llm, providers
 from core.questions import CHOICE_LABELS
@@ -36,41 +34,6 @@ _RELATIONSHIPS = [
 
 def _choice(answers, name):
     return CHOICE_LABELS[name].get((answers.get(name) or {}).get("choice"), "暂未判断")
-
-
-def _mp_banner_path() -> str:
-    """打包后在 _MEIPASS/docs，源码跑在仓库 docs/。"""
-    root = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(root, "docs", "wechat-mp.png")
-
-
-class _MpBanner(QLabel):
-    """公众号长条横幅，宽度跟着设置页走，高度按原图比例。"""
-
-    def __init__(self, path, parent=None):
-        super().__init__(parent)
-        self._src = QPixmap(path)
-        self._shown = 0
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, w):
-        if self._src.isNull() or w <= 0 or self._src.width() <= 0:
-            return 0
-        return max(1, round(w * self._src.height() / self._src.width()))
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        w = self.width()
-        if w <= 0 or w == self._shown or self._src.isNull():
-            return
-        h = self.heightForWidth(w)
-        self._shown = w
-        self.setPixmap(self._src.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        if self.height() != h:
-            self.setFixedHeight(h)
 
 
 class _FitCombo(ComboBox):
@@ -277,7 +240,7 @@ class Overlay:
         self.captureSwitch.setChecked(True)
         self.captureSwitch.checkedChanged.connect(self._capture_toggled)
         title.addWidget(self.captureSwitch)
-        self.settingsButton = _tool(FIF.SETTING, "设置", self.open_settings, header)
+        self.settingsButton = _tool(FIF.SETTING, "全局设置", self.open_settings, header)
         title.addWidget(self.settingsButton)
         title.addWidget(_tool(FIF.REMOVE, "最小化", self.win.showMinimized, header))
         title.addWidget(_tool(FIF.CLOSE, "关闭助手", self.win.close, header))
@@ -303,7 +266,9 @@ class Overlay:
         self.pages = QStackedWidget(self.win)
         outer.addWidget(self.pages, 1)
         self._build_home()
+        self._build_profile()
         self._build_settings()
+        self._refresh_profile_summary()
         footer = QHBoxLayout()
         footer.setContentsMargins(20, 9, 8, 8)
         footer.addWidget(_label(f"仅填入输入框 · 发送由你确认 · v{VERSION}", 11, _MUTED), 1)
@@ -385,6 +350,15 @@ class Overlay:
         self.chatFollow.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         chat_row.addWidget(self.chatFollow)
         body.addLayout(chat_row)
+        profile_row = QHBoxLayout()
+        profile_row.setSpacing(8)
+        self.profileSummary = _label("关系：尚未识别到会话", 12, _MUTED)
+        profile_row.addWidget(self.profileSummary, 1)
+        self.profileButton = PushButton("会话关系")
+        self.profileButton.setToolTip("给当前聊天对象单独设置关系和说话风格")
+        self.profileButton.clicked.connect(self.open_profile)
+        profile_row.addWidget(self.profileButton)
+        body.addLayout(profile_row)
         self.targetRow = QWidget()  # 只有开了「群聊指定回复对象」且这个会话是群聊才露出来
         target_row = QHBoxLayout(self.targetRow)
         target_row.setContentsMargins(0, 0, 0, 0)
@@ -481,42 +455,89 @@ class Overlay:
         self._history_title()
         body.addStretch(1)
 
+    def _build_profile(self):
+        """会话关系独立页：只管理当前聊天对象，不混进全局设置。"""
+        self.profilePage, body = self._scroll_page()
+        heading = QHBoxLayout()
+        heading.addWidget(_tool(FIF.RETURN, "返回回复建议", self._back_home))
+        heading.addWidget(_label("会话关系", 23, "#24382d", True), 1)
+        body.addLayout(heading)
+        body.addWidget(_label(
+            "关系和说话风格按聊天对象分别保存，只影响当前会话。",
+            13, _MUTED
+        ))
+
+        profile = _Surface()
+        box = QVBoxLayout(profile)
+        box.setContentsMargins(16, 16, 16, 18)
+        box.setSpacing(12)
+
+        box.addWidget(_label("当前会话", 13, _MUTED))
+        self.profileChatLabel = _label("尚未识别到会话", 16, "#304c3c", True)
+        box.addWidget(self.profileChatLabel)
+        self.profileStateLabel = _label("", 12, _MUTED)
+        box.addWidget(self.profileStateLabel)
+
+        relation_label = _label("你们的关系", 13)
+        box.addWidget(relation_label)
+        self.profileRelationshipBox = ComboBox()
+        self.profileRelationshipBox.setMinimumWidth(0)
+        self.profileRelationshipBox.addItems([name for name, value in _RELATIONSHIPS])
+        self.profileRelationshipBox.setAccessibleName("当前会话的关系")
+        relation_label.setBuddy(self.profileRelationshipBox)
+        box.addWidget(self.profileRelationshipBox)
+
+        self.profileRelEdit = LineEdit()
+        self.profileRelEdit.setPlaceholderText("例如：刚认识的朋友，正在慢慢熟悉")
+        self.profileRelEdit.setAccessibleName("当前会话的自定义关系")
+        box.addWidget(self.profileRelEdit)
+        self.profileRelationshipBox.currentIndexChanged.connect(
+            lambda index: self.profileRelEdit.setVisible(_RELATIONSHIPS[index][1] is None)
+        )
+        box.addWidget(self._hint("帮助助手把握对这个人的称呼、语气和回应分寸。"))
+
+        style_label = _label("说话风格（可选）", 13)
+        box.addWidget(style_label)
+        self.profileStyleEdit = LineEdit()
+        self.profileStyleEdit.setPlaceholderText("例如：话少、不用标点、偶尔用 doge、不说客套话")
+        self.profileStyleEdit.setAccessibleName("当前会话的说话风格")
+        style_label.setBuddy(self.profileStyleEdit)
+        box.addWidget(self.profileStyleEdit)
+        box.addWidget(self._hint("只对这个聊天对象生效，不影响其他会话。"))
+
+        body.addWidget(profile)
+        self.profileFeedback = _label("", 13, _GREEN)
+        self.profileFeedback.hide()
+        body.addWidget(self.profileFeedback)
+
+        actions = QHBoxLayout()
+        back = PushButton("返回")
+        back.clicked.connect(self._back_home)
+        actions.addWidget(back)
+        actions.addStretch(1)
+        self.profileSaveButton = PrimaryPushButton("保存当前会话")
+        self.profileSaveButton.clicked.connect(self._save_profile)
+        actions.addWidget(self.profileSaveButton)
+        body.addLayout(actions)
+        body.addStretch(1)
+
     def _build_settings(self):
         self.settingsPage, body = self._scroll_page()
         heading = QHBoxLayout()
         heading.addWidget(_tool(FIF.RETURN, "返回回复建议", self._back_home))
-        heading.addWidget(_label("设置", 23, "#24382d", True), 1)
+        heading.addWidget(_label("全局设置", 23, "#24382d", True), 1)
         body.addLayout(heading)
-        body.addWidget(_label("调整关系背景，配置判断和起草用的两个模型。", 13, _MUTED))
+        body.addWidget(_label(
+            "这里的设置对所有会话共用。关系和说话风格请在首页的「会话关系」里单独设置。",
+            13, _MUTED
+        ))
+
         preference = _Surface()
         box = QVBoxLayout(preference)
         box.setContentsMargins(16, 16, 16, 18)
         box.setSpacing(12)
-        box.addWidget(_label("回复偏好", 16, "#304c3c", True))
-        relation_label = _label("你们的关系", 13)
-        box.addWidget(relation_label)
-        self.relationshipBox = ComboBox()
-        self.relationshipBox.setMinimumWidth(0)
-        self.relationshipBox.addItems([name for name, value in _RELATIONSHIPS])
-        self.relationshipBox.setAccessibleName("你们的关系")
-        relation_label.setBuddy(self.relationshipBox)
-        box.addWidget(self.relationshipBox)
-        self.relEdit = LineEdit()
-        self.relEdit.setPlaceholderText("例如：刚认识的朋友，正在慢慢熟悉")
-        self.relEdit.setAccessibleName("自定义关系背景")
-        box.addWidget(self.relEdit)
-        self.relationshipBox.currentIndexChanged.connect(
-            lambda index: self.relEdit.setVisible(_RELATIONSHIPS[index][1] is None)
-        )
-        box.addWidget(self._hint("帮助助手把握称呼、语气和回应分寸。"))
-        style_label = _label("说话风格（可选）", 13)
-        box.addWidget(style_label)
-        self.styleEdit = LineEdit()
-        self.styleEdit.setPlaceholderText("例如：话少、不用标点、偶尔用 doge、不说客套话")
-        self.styleEdit.setAccessibleName("说话风格")
-        style_label.setBuddy(self.styleEdit)
-        box.addWidget(self.styleEdit)
-        box.addWidget(self._hint("候选本来就照着你最近发的消息模仿；这里可以再补一句你自己的口吻。"))
+        box.addWidget(_label("通用", 16, "#304c3c", True))
+
         context_label = _label("参考上下文", 13)
         box.addWidget(context_label)
         self.contextBox = SpinBox()
@@ -527,6 +548,7 @@ class Overlay:
         box.addWidget(self._hint(
             "生成和判断时看最近这么多条消息。太少会丢上下文，太多会稀释重点，建议 6–12。"
         ))
+
         target_row = QHBoxLayout()
         target_row.addWidget(_label("群聊指定回复对象", 13), 1)
         self.targetSwitch = SwitchButton()
@@ -538,6 +560,7 @@ class Overlay:
         box.addWidget(self._hint(
             "开了以后群聊里可以选回复给谁，候选会针对 TA 写，填入时可带 @。关了就正常回复。"
         ))
+
         update_row = QHBoxLayout()
         update_row.addWidget(_label("启动时检查更新", 13), 1)
         self.updateSwitch = SwitchButton()
@@ -549,13 +572,14 @@ class Overlay:
         box.addWidget(self._hint(
             "只向 GitHub 查最新版本号，不发送任何数据。国内访问 GitHub 慢的话关掉也行。"
         ))
+
         debug_row = QHBoxLayout()
         debug_row.addWidget(_label("调试视图", 13), 1)
         self.debugSwitch = SwitchButton()
         self.debugSwitch.setOnText("开")
         self.debugSwitch.setOffText("关")
         self.debugSwitch.setAccessibleName("调试视图")
-        self.debugSwitch.checkedChanged.connect(self._debug_toggled)  # 这个开关立刻生效，不等「保存设置」
+        self.debugSwitch.checkedChanged.connect(self._debug_toggled)
         debug_row.addWidget(self.debugSwitch)
         box.addLayout(debug_row)
         box.addWidget(self._hint(
@@ -580,6 +604,7 @@ class Overlay:
             "写那三条候选。OpenAI / Anthropic / Gemini 三种接口都走各自官方 SDK。"
             "默认 DeepSeek 官网直连，国内最快。"
         ))
+
         think_row = QHBoxLayout()
         think_row.addWidget(_label("起草时开启思考模式", 13), 1)
         self.thinkingSwitch = SwitchButton()
@@ -593,6 +618,7 @@ class Overlay:
             "只有 " + " / ".join(providers.THINKING) + " 认这个开关。"
         ))
         body.addWidget(models)
+
         self.settingsFeedback = _label("", 13, _GREEN)
         self.settingsFeedback.hide()
         body.addWidget(self.settingsFeedback)
@@ -601,14 +627,11 @@ class Overlay:
         back.clicked.connect(self._back_home)
         actions.addWidget(back)
         actions.addStretch(1)
-        self.saveButton = PrimaryPushButton("保存设置")
+        self.saveButton = PrimaryPushButton("保存全局设置")
         self.saveButton.clicked.connect(self._save)
         actions.addWidget(self.saveButton)
         body.addLayout(actions)
-        body.addWidget(self._hint("保存后用于下一次生成的回复。"))
-        banner = _mp_banner_path()
-        if os.path.exists(banner):
-            body.addWidget(_MpBanner(banner))
+        body.addWidget(self._hint("保存后用于所有会话下一次生成的回复。"))
         body.addStretch(1)
         self._load_settings()
 
@@ -784,13 +807,6 @@ class Overlay:
         group.status.setText("")
 
     def _load_settings(self):
-        relationship = settings.relationship()
-        index = next((i for i, (_, value) in enumerate(_RELATIONSHIPS) if value == relationship),
-                     len(_RELATIONSHIPS) - 1)
-        self.relationshipBox.setCurrentIndex(index)
-        self.relEdit.setText(relationship if _RELATIONSHIPS[index][1] is None else "")
-        self.relEdit.setVisible(_RELATIONSHIPS[index][1] is None)
-        self.styleEdit.setText(settings.style())
         self.contextBox.setValue(settings.context())
         self.targetSwitch.setChecked(settings.reply_target())
         self._set_group(self.jev, settings.jev_provider(), settings.jev_model())
@@ -804,17 +820,11 @@ class Overlay:
         self.settingsFeedback.hide()
 
     def _save(self):
-        relationship = _RELATIONSHIPS[self.relationshipBox.currentIndex()][1]
-        relationship = relationship or self.relEdit.text().strip()
         jev_provider = self._provider_of(self.jev)
         draft_provider = self._provider_of(self.draft)
         jev_base = self.jev.baseEdit.text().strip()
         draft_base = self.draft.baseEdit.text().strip()
 
-        if not relationship:
-            self._settings_feedback("请填写关系背景，或选择一个已有选项。", error=True)
-            self.relEdit.setFocus()
-            return
         if jev_provider in providers.JEV_CUSTOM and not jev_base:
             self._settings_feedback("自定义 System One 要填 Base URL。", error=True)
             self.jev.baseEdit.setFocus()
@@ -837,8 +847,7 @@ class Overlay:
 
         try:
             settings.save(
-                relationship,
-                self.contextBox.value(),
+                context_n=self.contextBox.value(),
                 jev_provider_text=jev_provider,
                 jev_key_text=self.jev.keyEdit.text().strip() or None,
                 jev_model_text=self.jev.modelBox.text().strip(),
@@ -848,7 +857,6 @@ class Overlay:
                 draft_model_text=self.draft.modelBox.text().strip(),
                 draft_base_url_text=(draft_base if draft_provider in providers.CUSTOM else None),
                 reply_target_on=self.targetSwitch.isChecked(),
-                style_text=self.styleEdit.text().strip(),
                 thinking_on=self.thinkingSwitch.isChecked(),
                 check_update_on=self.updateSwitch.isChecked(),
             )
@@ -858,11 +866,91 @@ class Overlay:
 
         self._load_settings()
         self._render_targets()
-        self._settings_feedback("设置已保存，将用于下一次回复。")
+        self._settings_feedback("全局设置已保存，将用于下一次回复。")
         self.setupButton.hide()
         if not self.cands and not self._busy:
             self._empty_text()
             self.set_status("设置已就绪，等待新消息", "idle")
+
+    def _load_profile(self):
+        chat = self._shown or self._chat
+        self.profileChatLabel.setText(chat or "尚未识别到会话")
+        self.profileSaveButton.setEnabled(bool(chat))
+        profile = chat_profiles.get(chat)
+
+        relationship = profile["relationship"]
+        index = next(
+            (i for i, (_, value) in enumerate(_RELATIONSHIPS) if value == relationship),
+            len(_RELATIONSHIPS) - 1,
+        )
+        self.profileRelationshipBox.blockSignals(True)
+        self.profileRelationshipBox.setCurrentIndex(index)
+        self.profileRelationshipBox.blockSignals(False)
+        custom = _RELATIONSHIPS[index][1] is None
+        self.profileRelEdit.setText(relationship if custom else "")
+        self.profileRelEdit.setVisible(custom)
+        self.profileStyleEdit.setText(profile["style"])
+
+        if not chat:
+            state = "先切到一个聊天会话，再保存关系资料。"
+        elif profile["saved"]:
+            state = "这个会话已有独立关系设置。"
+        elif profile["legacy"]:
+            state = "这个会话尚未单独设置，当前暂时沿用旧版的全局关系。"
+        else:
+            state = "这个会话尚未单独设置，当前使用默认关系「朋友」。"
+        self.profileStateLabel.setText(state)
+        self.profileFeedback.hide()
+
+    def _save_profile(self):
+        chat = self._shown or self._chat
+        if not chat:
+            self._profile_feedback("尚未识别到会话，先切到一个聊天对象。", error=True)
+            return
+
+        relationship = _RELATIONSHIPS[self.profileRelationshipBox.currentIndex()][1]
+        relationship = relationship or self.profileRelEdit.text().strip()
+        if not relationship:
+            self._profile_feedback("自定义关系不能为空。", error=True)
+            self.profileRelEdit.setFocus()
+            return
+
+        try:
+            chat_profiles.save(chat, relationship, self.profileStyleEdit.text().strip())
+        except Exception:
+            self._profile_feedback("保存失败，请检查程序目录是否可写。", error=True)
+            return
+
+        self._load_profile()
+        self._refresh_profile_summary()
+        self._profile_feedback(f"已保存「{chat}」的会话关系。")
+        self.set_status("会话关系已保存，将用于下一次回复", "success")
+
+    def _profile_feedback(self, text, error=False):
+        color = "#b44832" if error else _GREEN
+        qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
+        setCustomStyleSheet(self.profileFeedback, qss, qss)
+        self.profileFeedback.setText(text)
+        self.profileFeedback.show()
+
+    def _refresh_profile_summary(self):
+        chat = self._shown or self._chat
+        if not chat:
+            self.profileSummary.setText("关系：尚未识别到会话")
+            self.profileButton.setEnabled(False)
+            return
+        self.profileButton.setEnabled(True)
+        profile = chat_profiles.get(chat)
+        relationship = profile["relationship"]
+        name = next((label for label, value in _RELATIONSHIPS if value == relationship), relationship)
+        suffix = "" if profile["saved"] else " · 未单独设置"
+        self.profileSummary.setText(f"关系：{name}{suffix}")
+
+    def open_profile(self):
+        self._load_profile()
+        self.pages.setCurrentWidget(self.profilePage)
+        self.settingsButton.setEnabled(True)
+        self.profileRelationshipBox.setFocus()
 
     def _debug_toggled(self, on):
         """调试视图独立于「保存设置」：拨一下就开窗/收窗，顺手落盘，重启还在。"""
@@ -888,7 +976,7 @@ class Overlay:
             self._load_settings()
         self.pages.setCurrentWidget(self.settingsPage)
         self.settingsButton.setEnabled(False)
-        (self.relationshipBox if settings.has_key() else self.jev.keyEdit).setFocus()
+        (self.contextBox if settings.has_key() else self.jev.keyEdit).setFocus()
 
     def _back_home(self):
         self.jev.keyEdit.clear()
@@ -1087,6 +1175,7 @@ class Overlay:
         self._history_title()
         self._follow_text()
         self._render_targets()
+        self._refresh_profile_summary()
         self.show_cached(self.result_of(title) if self.result_of else None)
 
     def set_targets(self, chat, senders, current):
