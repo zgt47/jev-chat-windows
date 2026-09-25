@@ -85,111 +85,103 @@ def _error_body(exc: urllib.error.HTTPError) -> str:
     return redact_secrets(raw)[:800]
 
 
-def ask(state: dict, questions: dict, timeout: float = 20,
-        provider: str = "openrouter", model: str | None = None) -> dict:
-    """问 Jev 一轮判断，返回 {"answers": {名字: 答案}, "usage": {...}}。
-
-    provider ∈ JEV_PROVIDERS（openrouter / typesafe 直连）；model=None 用该来源的默认模型。
-    两条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
-    """
-    spec = JEV_PROVIDERS.get(provider) or JEV_PROVIDERS["openrouter"]
-    key = _api_key(JEV_ENV)  # 两家共用同一把 key，换来源不用重填
-    model = model or spec.default
-    if provider == "typesafe":
-        return _ask_typesafe(state, questions, key, model, timeout)
-    return _ask_openrouter(state, questions, key, model, timeout)
+def _systemone_url(base_url: str) -> str:
+    """用户既可以填服务根地址，也可以直接填完整的 /v1/systemone 地址。"""
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise JevError("System One Base URL 为空")
+    if base.endswith("/v1/systemone") or base.endswith("/systemone"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/systemone"
+    return base + "/v1/systemone"
 
 
-def _answer(answer) -> dict:
-    """SDK 的答案对象 → OpenRouter 那条路 JSON 出来的同一个形状。"""
-    if answer.type == "noul":
-        return {"type": "noul", "noul": answer.noul}
-    if answer.type == "choice":
-        return {"type": "choice", "choice": answer.choice, "confidence": answer.confidence,
-                "probabilities": dict(answer.probabilities)}
-    # score：SDK 把概率的 key 转成了 int，这里转回字符串，跟 JSON 那条路对齐
-    return {"type": "score", "score": answer.score, "confidence": answer.confidence,
-            "probabilities": {str(k): v for k, v in answer.probabilities.items()}}
-
-
-def _ask_typesafe(state: dict, questions: dict, key: str, model: str, timeout: float) -> dict:
-    """官方 typesafe_sdk。questions 原样传：core/questions.py 里那几个 dict 本身就是 SDK 的
-    NoulModel / ChoiceModel / ScoreModel（SDK 的 normalize_questions 认 dict），不用再包一层对象。
-    重试用 RetryPolicy 的默认值——它本来就重试 408/429/5xx（含 529）并退避。"""
-    import typesafe_sdk
-
-    try:
-        with typesafe_sdk.TypeSafeClient(api_key=key, base_url=TYPESAFE_BASE, model=model,
-                                         timeout=timeout) as client:
-            result = client.system_one(state, questions, model=model)
-    except Exception as exc:
-        _fail(exc, "Jev 判断")
-    return {
-        "answers": {name: _answer(a) for name, a in result.answers.items()},
-        "usage": {"input_tokens": result.usage.input_tokens,
-                  "output_tokens": result.usage.output_tokens},
-    }
-
-
-def _ask_openrouter(state: dict, questions: dict, key: str, model: str, timeout: float) -> dict:
-    """OpenRouter 的 /api/alpha/decisions，手写 urllib。429/529 退避重试 3 次。"""
-    payload = json.dumps(
-        {"model": model, "state": state, "questions": questions},
-        ensure_ascii=False,
-    ).encode("utf-8")
-
+def _post_json(url: str, payload: dict, key: str, timeout: float, what: str) -> dict:
+    """统一的 Bearer + JSON POST；429/529/5xx 做有限退避重试。"""
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     last_status: int | None = None
     last_body = ""
+
     for attempt in range(MAX_RETRIES + 1):
         req = urllib.request.Request(
-            OPENROUTER_DECISIONS,
-            data=payload,
+            url,
+            data=data,
             method="POST",
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json; charset=utf-8",
                 "Accept": "application/json",
+                "User-Agent": "jev-chat-windows",
             },
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8")
-                return json.loads(raw)
+                out = json.loads(raw)
+                if not isinstance(out, dict):
+                    raise JevError(f"{what}返回格式不正确")
+                return out
         except urllib.error.HTTPError as exc:
             last_status = exc.code
             last_body = _error_body(exc)
-            if last_status in (429, 529) and attempt < MAX_RETRIES:
-                time.sleep(2**attempt)
+            retryable = last_status in (408, 429, 529) or 500 <= last_status <= 599
+            if retryable and attempt < MAX_RETRIES:
+                time.sleep(2 ** attempt)
                 continue
-            readable = {
-                401: f"Jev HTTP 401: API key rejected. Check {JEV_ENV}.",
-                422: f"Jev HTTP 422: request body rejected. {last_body}",
-                429: f"Jev HTTP 429: rate limited after {MAX_RETRIES} retries. {last_body}",
-                529: f"Jev HTTP 529: provider overloaded after {MAX_RETRIES} retries. {last_body}",
-            }.get(last_status, f"Jev HTTP {last_status}: {last_body}")
-            raise JevError(readable, last_status) from None
+            hint = {
+                400: "请求格式不兼容",
+                401: "密钥被拒",
+                403: "没有权限",
+                404: "模型或地址不对",
+                422: "请求被拒",
+                429: "被限流",
+                529: "服务过载",
+            }.get(last_status, last_body or "请求失败")
+            raise JevError(f"{what} HTTP {last_status}: {hint}", last_status) from None
         except (TimeoutError, socket.timeout) as exc:
             if attempt < MAX_RETRIES:
-                time.sleep(2**attempt)
+                time.sleep(2 ** attempt)
                 continue
-            raise JevError(f"Jev request timed out after {timeout}s") from exc
+            raise JevError(f"{what}请求超时（{timeout}s）") from exc
         except urllib.error.URLError as exc:
             reason = redact_secrets(getattr(exc, "reason", exc))
             if attempt < MAX_RETRIES:
-                time.sleep(2**attempt)
+                time.sleep(2 ** attempt)
                 continue
-            raise JevError(f"Jev request failed: {reason}") from None
+            raise JevError(f"{what}连接失败: {reason}") from None
+        except json.JSONDecodeError:
+            raise JevError(f"{what}返回的不是有效 JSON") from None
 
-    raise JevError(
-        f"Jev HTTP {last_status}: exhausted retries. {last_body}", last_status
-    )
+    raise JevError(f"{what} HTTP {last_status}: {last_body}", last_status)
+
+
+def ask(
+    state: dict,
+    questions: dict,
+    timeout: float = 20,
+    provider: str = "openrouter",
+    model: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """问 Jev 一轮判断，统一返回 {"answers": {...}, "usage": {...}}。"""
+    spec = JEV_PROVIDERS.get(provider) or JEV_PROVIDERS["openrouter"]
+    key = _api_key(JEV_ENV)
+    model = (model or spec.default or "").strip()
+    if not model:
+        raise JevError("判断模型名称为空")
+    payload = {"model": model, "state": state, "questions": questions}
+    if spec.protocol == "openrouter":
+        return _post_json(OPENROUTER_DECISIONS, payload, key, timeout, "Jev 判断")
+    base = (base_url or spec.base or "").strip()
+    return _post_json(_systemone_url(base), payload, key, timeout, "Jev 判断")
 
 
 def _check_openrouter_key(key: str, timeout: float) -> None:
-    """免费的 auth/key 探测：401/403 说明 key 不对，别的错（超时/断网）也如实上报。
-    列表本身是写死的，key 对不对只有靠它才知道，别等第一次判断才暴露。"""
-    req = urllib.request.Request(OPENROUTER_KEY_URL,
-                                 headers={"Authorization": f"Bearer {key}"})
+    req = urllib.request.Request(
+        OPENROUTER_KEY_URL,
+        headers={"Authorization": f"Bearer {key}", "User-Agent": "jev-chat-windows"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp.read()
@@ -199,26 +191,35 @@ def _check_openrouter_key(key: str, timeout: float) -> None:
     except (TimeoutError, socket.timeout):
         raise JevError(f"取模型列表请求超时（{timeout}s）") from None
     except urllib.error.URLError as exc:
-        raise JevError(
-            f"取模型列表失败: {redact_secrets(getattr(exc, 'reason', exc))}") from None
+        raise JevError(f"取模型列表失败: {redact_secrets(getattr(exc, 'reason', exc))}") from None
 
 
-def list_models(provider: str, key: str, timeout: float = 10) -> list[str]:
-    """某家能用的 Jev 模型 id，去重排序。失败抛 JevError（设置页直接显示这句话）。"""
+def list_models(
+    provider: str,
+    key: str,
+    timeout: float = 10,
+    base_url: str | None = None,
+) -> list[str]:
+    spec = JEV_PROVIDERS.get(provider)
+    if not spec:
+        raise JevError("未知的判断来源")
+    if provider == "openrouter":
+        _check_openrouter_key(key, timeout)
+        return list(spec.models or ())
+    if spec.models:
+        return list(spec.models)
     if provider == "typesafe":
         import typesafe_sdk
-
         try:
-            with typesafe_sdk.TypeSafeClient(api_key=key, base_url=TYPESAFE_BASE,
-                                             timeout=timeout) as client:
+            with typesafe_sdk.TypeSafeClient(api_key=key, base_url=TYPESAFE_BASE, timeout=timeout) as client:
                 return sorted({m.name for m in client.models.list().models})
         except Exception as exc:
             _fail(exc, "取模型列表")
-    # OpenRouter 的 Jev 是 Decisions API 专属模型，不在 /api/v1/models 目录里
-    # （也没有列它的专用端点），列表按官方模型页写死，别名列排最前（永远指向最新版）。
-    # key 对不对由探测兜着，别让坏密钥等到第一次判断才暴露。
-    _check_openrouter_key(key, timeout)
-    return ["~typesafe/jev-latest", "typesafe/jev-1.13"]
+    if provider == "custom_systemone":
+        if not (base_url or "").strip():
+            raise JevError("先填 Base URL")
+        raise JevError("自定义 System One 无法自动判断模型列表，请直接手动输入模型名称")
+    return []
 
 
 if __name__ == "__main__":
