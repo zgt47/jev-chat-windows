@@ -1,0 +1,70 @@
+name: dev-runtime
+
+on:
+  push:
+    branches: ['dev-external-source']
+    paths:
+      - '.github/workflows/dev-runtime.yml'
+      - 'requirements.txt'
+      - 'dev/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 安装运行依赖
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: 组装便携开发环境
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'devdist\JevChat-Windows-Dev'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          $pyExe = (python -c "import sys; print(sys.executable)").Trim()
+          $pyHome = Split-Path $pyExe -Parent
+          $runtime = Join-Path $out 'runtime'
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+
+          robocopy $pyHome $runtime /E /NFL /NDL /NJH /NJS /NP
+          if ($LASTEXITCODE -ge 8) { throw "复制 Python 运行环境失败，robocopy=$LASTEXITCODE" }
+
+          Copy-Item 'main.py' $out -Force
+          Copy-Item 'app' $out -Recurse -Force
+          Copy-Item 'core' $out -Recurse -Force
+          Copy-Item 'requirements.txt','LICENSE','NOTICE','DEV使用说明.md' $out -Force
+          Copy-Item 'dev\更新开发源码.ps1','dev\更新开发源码.cmd' $out -Force
+
+          Add-Type -TypeDefinition (Get-Content 'dev\DevLauncher.cs' -Raw) `
+            -OutputAssembly (Join-Path $out 'JevChat-Dev.exe') `
+            -OutputType WindowsApplication `
+            -ReferencedAssemblies 'System.Windows.Forms.dll','System.dll'
+
+          Get-ChildItem $out | Select-Object Name,Length
+
+      - name: 压缩开发环境
+        shell: pwsh
+        run: |
+          Compress-Archive -Path 'devdist\JevChat-Windows-Dev' -DestinationPath 'JevChat-Windows-Dev.zip' -CompressionLevel Optimal
+
+      - name: 上传开发环境
+        uses: actions/upload-artifact@v4
+        with:
+          name: JevChat-Windows-Dev
+          path: JevChat-Windows-Dev.zip
+          if-no-files-found: error
