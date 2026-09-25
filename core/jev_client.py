@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Jev 判断 API 客户端：OpenRouter 或 TypeSafe 直连。
+"""Jev 判断 API 客户端。
 
-TypeSafe 直连走官方 `typesafe_sdk`；OpenRouter 这条是唯一自己拼 HTTP 的路——
-SDK 把路径写死成 `/v1/systemone`，打不到 OpenRouter 的 `/api/alpha/decisions`。
-两条路返回同一个 dict 形状，engine 不关心跑的是哪条。key 只从环境变量读，绝不打进日志。
+判断层只保留两种底层协议：
+- OpenRouter：POST /api/alpha/decisions
+- System One：POST /v1/systemone
+
+TypeSafe、博查、Vercel、OpenCode Zen、硅基流动和自定义 System One
+全部走同一个 System One 发送函数。engine 不需要知道厂商差异。
 """
 
 from __future__ import annotations
@@ -223,134 +226,58 @@ def list_models(
 
 
 if __name__ == "__main__":
-    # ponytail: 不联网。两条路各测一次：SDK 那条在 typesafe_sdk 边界换成假客户端，
-    # urllib 那条 mock urlopen。会坏的地方就一个——答案对象 → dict 的映射得跟 JSON 那条一模一样。
     import io
-    import types as _t
     from unittest.mock import patch
 
-    import typesafe_sdk
-
     try:
-        from .questions import JUDGE_QUESTIONS, build_rank_question
+        from .questions import JUDGE_QUESTIONS
     except ImportError:
-        from questions import JUDGE_QUESTIONS, build_rank_question
+        from questions import JUDGE_QUESTIONS
 
     os.environ.pop(JEV_ENV, None)
-    os.environ["OPENROUTER_API_KEY"] = "or-key"  # 老名字：新名字没设时该退回它
-    assert _api_key(JEV_ENV) == "or-key"
-    os.environ[JEV_ENV] = "ts-key"  # 新名字在就用新的，两家来源共用这一把
-    questions = dict(JUDGE_QUESTIONS)
-    questions.update(build_rank_question(["甲", "乙", "丙"]))
-    seen: dict = {}
+    os.environ["OPENROUTER_API_KEY"] = "legacy-key"
+    assert _api_key(JEV_ENV) == "legacy-key"
+    os.environ[JEV_ENV] = "new-key"
 
-    class _FakeClient:
-        def __init__(self, **kw):
-            seen["init"] = kw
+    seen = {}
 
+    class _Resp(io.BytesIO):
         def __enter__(self):
             return self
 
         def __exit__(self, *_):
             return False
 
-        def system_one(self, state, qs, **kw):
-            seen["state"], seen["questions"], seen["kw"] = state, qs, kw
-            return _t.SimpleNamespace(
-                answers={
-                    "literal_question": _t.SimpleNamespace(type="noul", noul=0.9),
-                    "best_reply": _t.SimpleNamespace(
-                        type="choice", choice="reply_b", confidence=0.7,
-                        probabilities={"reply_a": 0.2, "reply_b": 0.7, "reply_c": 0.1}),
-                    "danger_level": _t.SimpleNamespace(
-                        type="score", score=4.0, confidence=0.6, probabilities={4: 0.6, 5: 0.4}),
-                },
-                usage=_t.SimpleNamespace(input_tokens=11, output_tokens=22))
+    def _fake_systemone(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode("utf-8"))
+        return _Resp(json.dumps({
+            "answers": {"literal_question": {"type": "noul", "noul": 0.9}},
+            "usage": {"input_tokens": 12, "output_tokens": 3},
+        }).encode("utf-8"))
 
-        @property
-        def models(self):
-            return _t.SimpleNamespace(list=lambda: _t.SimpleNamespace(models=(
-                _t.SimpleNamespace(name="jev-preview"), _t.SimpleNamespace(name="jev-latest"))))
+    with patch.object(urllib.request, "urlopen", _fake_systemone):
+        got = ask(
+            {"chat": {}},
+            dict(JUDGE_QUESTIONS),
+            provider="siliconflow_jev",
+            model="diffusiongemma",
+        )
+    assert seen["url"] == "https://api.siliconflow.cn/v1/systemone"
+    assert seen["body"]["model"] == "diffusiongemma"
+    assert got["answers"]["literal_question"]["noul"] == 0.9
 
-    with patch.object(typesafe_sdk, "TypeSafeClient", _FakeClient):
-        got = ask({"chat": {}}, questions, timeout=15, provider="typesafe", model="jev-1.13.0")
-        ask_init = seen["init"]
-        assert list_models("typesafe", "ts-key") == ["jev-latest", "jev-preview"]
-        assert seen["init"] == {"api_key": "ts-key", "base_url": TYPESAFE_BASE, "timeout": 10}
-    assert ask_init == {"api_key": "ts-key", "base_url": TYPESAFE_BASE,
-                        "model": "jev-1.13.0", "timeout": 15}
-    assert seen["kw"] == {"model": "jev-1.13.0"}
-    # 题目原样进 SDK：它们本身就是 NoulModel / ChoiceModel / ScoreModel，不用再包一层
-    assert seen["questions"] is questions
-    assert seen["questions"]["danger_level"]["type"] == "score"
-    assert isinstance(seen["questions"]["danger_level"]["criteria"], list)
-    assert seen["questions"]["best_reply"]["criteria"] == {
-        "reply_a": "甲", "reply_b": "乙", "reply_c": "丙"}
-    # 映射出来的形状跟 OpenRouter 那条路的 JSON 必须一致（engine 不关心跑的是哪条）
-    assert got["answers"]["literal_question"] == {"type": "noul", "noul": 0.9}
-    assert got["answers"]["best_reply"] == {
-        "type": "choice", "choice": "reply_b", "confidence": 0.7,
-        "probabilities": {"reply_a": 0.2, "reply_b": 0.7, "reply_c": 0.1}}
-    assert got["answers"]["danger_level"] == {
-        "type": "score", "score": 4.0, "confidence": 0.6,
-        "probabilities": {"4": 0.6, "5": 0.4}}  # score 的概率 key 转回字符串
-    assert got["usage"] == {"input_tokens": 11, "output_tokens": 22}
+    with patch.object(urllib.request, "urlopen", _fake_systemone):
+        ask(
+            {"chat": {}},
+            dict(JUDGE_QUESTIONS),
+            provider="custom_systemone",
+            model="my-jev",
+            base_url="https://example.com/custom/v1/systemone",
+        )
+    assert seen["url"] == "https://example.com/custom/v1/systemone"
 
-    class _Boom(Exception):
-        status = 429
-
-    with patch.object(typesafe_sdk, "TypeSafeClient", lambda **kw: (_ for _ in ()).throw(_Boom("x"))):
-        try:
-            ask({"chat": {}}, questions, provider="typesafe")
-            raise SystemExit("应当抛错")
-        except JevError as e:
-            assert e.status == 429 and "被限流" in str(e)
-
-    # OpenRouter 那条没动：还是自己拼 body、打 /api/alpha/decisions
-    body = {"answers": {"best_reply": {"type": "choice", "choice": "reply_a"}}, "usage": {}}
-
-    def _fake_urlopen(req, timeout=None):
-        seen["url"], seen["body"] = req.full_url, json.loads(req.data.decode("utf-8"))
-        return io.BytesIO(json.dumps(body).encode("utf-8"))
-
-    with patch.object(urllib.request, "urlopen", _fake_urlopen):
-        assert ask({"chat": {}}, questions) == body
-    assert seen["url"] == OPENROUTER_DECISIONS
-    assert seen["body"]["model"] == "typesafe/jev-1.13" and seen["body"]["questions"] == questions
-
-    # OpenRouter 路的列表是写死的，但 key 要过 auth/key 探测：mock urlopen 验两头
-    def _fake_key_ok(req, timeout=None):
-        seen["key_url"] = req.full_url
-        assert req.headers["Authorization"] == "Bearer or-key"
-        return io.BytesIO(b'{"data":{}}')
-
-    with patch.object(urllib.request, "urlopen", _fake_key_ok):
-        assert list_models("openrouter", "or-key") == [
-            "~typesafe/jev-latest", "typesafe/jev-1.13"]
-    assert seen["key_url"] == OPENROUTER_KEY_URL
-
-    def _fake_key_rejected(req, timeout=None):
-        raise urllib.error.HTTPError(OPENROUTER_KEY_URL, 401, "Unauthorized", {},
-                                     io.BytesIO(b'{"error":{"message":"bad key or-key"}}'))
-
-    with patch.object(urllib.request, "urlopen", _fake_key_rejected):
-        try:
-            list_models("openrouter", "or-key")
-            raise SystemExit("应当抛错")
-        except JevError as e:
-            assert e.status is None and "密钥被拒" in str(e) and "or-key" not in str(e)
-
-    # 401/403 以外的状态码要把响应体带出来（别提前 read 把流吃空）
-    def _fake_key_429(req, timeout=None):
-        raise urllib.error.HTTPError(OPENROUTER_KEY_URL, 429, "Too Many", {},
-                                     io.BytesIO(b'{"error":{"message":"rate limited"}}'))
-
-    with patch.object(urllib.request, "urlopen", _fake_key_429):
-        try:
-            list_models("openrouter", "or-key")
-            raise SystemExit("应当抛错")
-        except JevError as e:
-            assert "HTTP 429" in str(e) and "rate limited" in str(e)
-
-    assert redact_secrets("key=ts-key or-key") == "key=[REDACTED] [REDACTED]"
+    assert list_models("zen", "x") == ["jev-1.13", "jev-1.13-free"]
+    assert list_models("siliconflow_jev", "x") == ["diffusiongemma", "Kev-4b", "SemIf"]
+    assert redact_secrets("new-key legacy-key") == "[REDACTED] [REDACTED]"
     print("jev_client ok")
