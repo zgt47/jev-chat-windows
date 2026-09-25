@@ -6,7 +6,8 @@ on:
     paths:
       - '.github/workflows/dev-runtime.yml'
       - 'requirements.txt'
-      - 'dev/**'
+      - 'dev/DevBootstrap.py'
+      - 'dev/dev.spec'
   workflow_dispatch:
 
 permissions:
@@ -28,21 +29,18 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements.txt pyinstaller
 
-      - name: 组装便携开发环境
+      - name: 构建精简开发运行时
         shell: pwsh
         run: |
-          $out = Join-Path $PWD 'devdist\JevChat-Windows-Dev'
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          pyinstaller --noconfirm --clean dev/dev.spec
 
-          $pyExe = (python -c "import sys; print(sys.executable)").Trim()
-          $pyHome = Split-Path $pyExe -Parent
-          $runtime = Join-Path $out 'runtime'
-          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
-
-          robocopy $pyHome $runtime /E /NFL /NDL /NJH /NJS /NP
-          if ($LASTEXITCODE -ge 8) { throw "复制 Python 运行环境失败，robocopy=$LASTEXITCODE" }
+      - name: 加入外置源码和更新脚本
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'dist\JevChat-Windows-Dev'
+          if (-not (Test-Path $out)) { throw "没有生成开发运行时目录" }
 
           Copy-Item 'main.py' $out -Force
           Copy-Item 'app' $out -Recurse -Force
@@ -50,23 +48,15 @@ jobs:
           Copy-Item 'requirements.txt','LICENSE','NOTICE','DEV使用说明.md' $out -Force
           Copy-Item 'dev\更新开发源码.ps1','dev\更新开发源码.cmd' $out -Force
 
-          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          if (-not (Test-Path $csc)) { throw "找不到 Windows C# 编译器：$csc" }
-          & $csc /nologo /target:winexe /optimize+ `
-            /reference:System.Windows.Forms.dll `
-            /out:"$out\JevChat-Dev.exe" `
-            "dev\DevLauncher.cs"
-          if ($LASTEXITCODE -ne 0) { throw "开发版启动器编译失败，csc=$LASTEXITCODE" }
-          if (-not (Test-Path (Join-Path $out 'JevChat-Dev.exe'))) {
-            throw "开发版启动器没有生成"
-          }
-
-          Get-ChildItem $out | Select-Object Name,Length
+          $size = (Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum
+          Write-Host ("开发环境展开大小：{0:N1} MB" -f ($size / 1MB))
 
       - name: 压缩开发环境
         shell: pwsh
         run: |
-          Compress-Archive -Path 'devdist\JevChat-Windows-Dev' -DestinationPath 'JevChat-Windows-Dev.zip' -CompressionLevel Optimal
+          Compress-Archive -Path 'dist\JevChat-Windows-Dev' -DestinationPath 'JevChat-Windows-Dev.zip' -CompressionLevel Optimal
+          $zip = Get-Item 'JevChat-Windows-Dev.zip'
+          Write-Host ("压缩包大小：{0:N1} MB" -f ($zip.Length / 1MB))
 
       - name: 上传开发环境
         uses: actions/upload-artifact@v4
