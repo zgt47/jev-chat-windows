@@ -13,7 +13,7 @@ import threading
 import traceback
 from collections import deque
 
-from app import settings, update, worker
+from app import chat_profiles, settings, update, worker
 from app.capture import find_wechat_hwnd
 from app.fill import fill
 from app.overlay import Overlay
@@ -105,11 +105,12 @@ def on_toggle_capture(on):
 def analyze_bg(msgs, title, revision, reply_to=None):
     """后台线程只跑网络调用，结果丢队列；UI 只在主线程的 tick 里动（Qt 不能跨线程碰）。"""
     try:
-        results.put(("ok", analyze(msgs, settings.relationship(), context=settings.context(),
+        profile = chat_profiles.get(title)
+        results.put(("ok", analyze(msgs, profile["relationship"], context=settings.context(),
                                    model=settings.draft_model() or None,
                                    provider=settings.draft_provider(),
                                    base_url=settings.draft_base_url() or None,
-                                   reply_to=reply_to, style=settings.style(),
+                                   reply_to=reply_to, style=profile["style"],
                                    thinking=settings.thinking(),
                                    jev_provider=settings.jev_provider(),
                                    jev_model=settings.jev_model() or None,
