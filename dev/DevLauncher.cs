@@ -8,7 +8,7 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
-        string root = AppContext.BaseDirectory;
+        string root = AppDomain.CurrentDomain.BaseDirectory;
         string python = Path.Combine(root, "runtime", "pythonw.exe");
         string main = Path.Combine(root, "main.py");
 
