@@ -573,7 +573,7 @@ class Overlay:
         self._fetched.done.connect(self._models_fetched)
         self.jev = self._model_group(box, "判断 · Jev", "jev", providers.JEV_PROVIDERS)
         box.addWidget(self._hint(
-            "判断意图、紧张度，并给三条候选排序。两家给的是同一个 Jev，必填。"
+            "判断意图、紧张度，并给三条候选排序。OpenRouter 走专用接口，其他预设走 System One。"
         ))
         self.draft = self._model_group(box, "起草 · 语言模型", "draft", providers.DRAFT_PROVIDERS)
         box.addWidget(self._hint(
@@ -613,39 +613,45 @@ class Overlay:
         self._load_settings()
 
     def _hint(self, text):
-        """设置页字段下面的灰字说明：记下来，紧凑模式一起隐藏。"""
         label = _label(text, 12, _MUTED)
         self._hintLabels.append(label)
         return label
 
     def _model_group(self, box, title, kind, table):
-        """一组「来源 / 密钥 / 模型」控件，判断和起草各一份。table 是 core/providers.py 里那张表。"""
-        group = SimpleNamespace(kind=kind, table=table, ids=list(table),
-                                keyTitle="判断" if kind == "jev" else "起草",
-                                stored_key=lambda k=kind: (settings.jev_key() if k == "jev"
-                                                           else settings.llm_key()))
+        """一组「来源 / 地址（仅自定义） / 密钥 / 模型」控件。"""
+        group = SimpleNamespace(
+            kind=kind,
+            table=table,
+            ids=list(table),
+            keyTitle="判断" if kind == "jev" else "起草",
+            stored_key=lambda k=kind: (settings.jev_key() if k == "jev" else settings.llm_key()),
+        )
         heading = QHBoxLayout()
         heading.addWidget(_label(title, 14, "#304c3c", True), 1)
         group.keyState = _label("", 12, _GREEN)
         group.keyState.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         heading.addWidget(group.keyState)
         box.addLayout(heading)
+
         source_label = _label("来源", 13)
         box.addWidget(source_label)
         group.providerBox = ComboBox()
-        group.providerBox.setMinimumWidth(0)  # 选项文字长短不一，别让它撑开设置页
+        group.providerBox.setMinimumWidth(0)
         group.providerBox.addItems([table[i].name for i in group.ids])
         group.providerBox.setAccessibleName(f"{title} 来源")
         source_label.setBuddy(group.providerBox)
         box.addWidget(group.providerBox)
-        if kind == "draft":  # 只有两个「自定义」来源要自己填地址，别的来源这一行藏着
-            self.baseLabel = _label("Base URL", 13)
-            box.addWidget(self.baseLabel)
-            self.baseEdit = LineEdit()
-            self.baseEdit.setPlaceholderText("https://你的服务/v1")
-            self.baseEdit.setAccessibleName("自定义来源 Base URL")
-            self.baseLabel.setBuddy(self.baseEdit)
-            box.addWidget(self.baseEdit)
+
+        group.baseLabel = _label("Base URL", 13)
+        box.addWidget(group.baseLabel)
+        group.baseEdit = LineEdit()
+        group.baseEdit.setPlaceholderText(
+            "https://你的服务" if kind == "jev" else "https://你的服务/v1"
+        )
+        group.baseEdit.setAccessibleName(f"{title} 自定义 Base URL")
+        group.baseLabel.setBuddy(group.baseEdit)
+        box.addWidget(group.baseEdit)
+
         key_label = _label("密钥", 13)
         box.addWidget(key_label)
         group.keyEdit = PasswordLineEdit()
@@ -654,13 +660,15 @@ class Overlay:
         group.keyEdit.returnPressed.connect(self._save)
         box.addWidget(group.keyEdit)
         box.addWidget(self._hint(
-            "OpenRouter 的 key 或 TypeSafe 的 key，看上面选的来源。" if kind == "jev"
-            else "上面选哪家就填哪家的 key；换来源重填一次，只存这一把。"))
+            "上面选哪家就填哪家的密钥；切换来源后重填这一把。" if kind == "jev"
+            else "上面选哪家就填哪家的密钥；换来源重填一次，只存这一把。"
+        ))
+
         model_label = _label("模型", 13)
         box.addWidget(model_label)
         row = QHBoxLayout()
         row.setSpacing(8)
-        group.modelBox = EditableComboBox()  # 能选也能手打，接口新出的模型不用等我改代码
+        group.modelBox = EditableComboBox()
         group.modelBox.setMinimumWidth(0)
         group.modelBox.setAccessibleName(f"{title} 模型")
         model_label.setBuddy(group.modelBox)
@@ -680,19 +688,25 @@ class Overlay:
         return group.ids[max(0, group.providerBox.currentIndex())]
 
     def _provider_changed(self, group):
-        """换来源：模型框回到这家该有的值（存的就是这家才用存的，否则用它的默认），状态清掉。"""
         provider = self._provider_of(group)
         saved = settings.jev_provider() if group.kind == "jev" else settings.draft_provider()
         stored = settings.jev_model() if group.kind == "jev" else settings.draft_model()
         group.modelBox.clear()
         group.modelBox.setText(stored if provider == saved else group.table[provider].default)
+        if group.kind == "jev":
+            if provider in providers.JEV_CUSTOM:
+                group.baseEdit.setText(settings.jev_custom_base_url())
+            else:
+                group.baseEdit.clear()
+        else:
+            if provider in providers.CUSTOM:
+                group.baseEdit.setText(settings.draft_base_url() if saved == provider else "")
+            else:
+                group.baseEdit.clear()
         group.status.setText("")
         self._sync_model_fields()
 
     def _sync_model_fields(self):
-        """两组共用：密钥已配置/未配置、占位文案、自定义 Base URL 行的显隐，
-        外加紧凑模式下把来源按钮上的文字省略——ComboBox 是 QPushButton，
-        minimumSizeHint 按整段文字算，不会自动换行/省略，长名字会把设置页撑宽。"""
         for group in (self.jev, self.draft):
             provider = self._provider_of(group)
             name = group.table[provider].name
@@ -703,15 +717,21 @@ class Overlay:
             if self._compact:
                 name = group.providerBox.fontMetrics().elidedText(name, Qt.ElideRight, 180)
             group.providerBox.setText(name)
-        custom = self._provider_of(self.draft) in providers.CUSTOM
-        self.baseLabel.setVisible(custom)
-        self.baseEdit.setVisible(custom)
+
+        jev_custom = self._provider_of(self.jev) in providers.JEV_CUSTOM
+        self.jev.baseLabel.setVisible(jev_custom)
+        self.jev.baseEdit.setVisible(jev_custom)
+        draft_custom = self._provider_of(self.draft) in providers.CUSTOM
+        self.draft.baseLabel.setVisible(draft_custom)
+        self.draft.baseEdit.setVisible(draft_custom)
 
     def _fetch_models(self, group):
-        """「获取模型」：拿填的 key（没填就拿存的）去问接口，网络调用丢后台线程。"""
         provider = self._provider_of(group)
-        custom = group.kind == "draft" and provider in providers.CUSTOM
-        base = self.baseEdit.text().strip() if custom else None
+        if group.kind == "jev":
+            custom = provider in providers.JEV_CUSTOM
+        else:
+            custom = provider in providers.CUSTOM
+        base = group.baseEdit.text().strip() if custom else None
         key = group.keyEdit.text().strip() or group.stored_key()
         if not key:
             group.status.setText("先填密钥")
@@ -721,29 +741,29 @@ class Overlay:
             return
         group.status.setText("获取中…")
         group.fetchButton.setEnabled(False)
-        threading.Thread(target=lambda: self._list_models(group, provider, key, base),
-                         daemon=True).start()
+        threading.Thread(
+            target=lambda: self._list_models(group, provider, key, base),
+            daemon=True,
+        ).start()
 
     def _list_models(self, group, provider, key, base):
-        """后台线程：判断走 jev_client，起草按协议走 llm；失败把原因一起送回主线程。"""
         try:
             if group.kind == "jev":
-                models = jev_client.list_models(provider, key)
+                models = jev_client.list_models(provider, key, base_url=base)
             else:
                 spec = providers.DRAFT_PROVIDERS[provider]
                 models = llm.list_models(spec.protocol, base or spec.base, key, headers=spec.headers)
-                if spec.keep:  # 目录里混了别的协议时，只留这条路打得通的
+                if spec.keep:
                     models = [m for m in models if spec.keep(m)]
-            reason = "" if models else "这个来源没返回任何模型"
-        except Exception as exc:  # 线程里漏异常会静默吞掉，按钮就永远停在禁用态
-            models, reason = [], str(exc)[:120]
+            reason = "" if models else "这个来源没有返回模型列表，可直接手动输入模型名后保存"
+        except Exception as exc:
+            models, reason = [], str(exc)[:160]
         self._fetched.done.emit(group, models, reason)
 
     def _models_fetched(self, group, models, reason):
-        """回到主线程：填进下拉框，原来选中的还在列表里就留着。"""
         group.fetchButton.setEnabled(True)
         if not models:
-            group.status.setText(reason or "获取失败，检查密钥、网络或 Base URL")
+            group.status.setText(reason or "获取失败；如果知道模型名，可以直接手动输入并保存")
             return
         current = group.modelBox.text().strip()
         group.modelBox.clear()
@@ -751,11 +771,10 @@ class Overlay:
         if current in models:
             group.modelBox.setCurrentIndex(models.index(current))
         else:
-            group.modelBox.setText(current)  # 手打的没在列表里也不清掉
+            group.modelBox.setText(current)
         group.status.setText(f"共 {len(models)} 个")
 
     def _set_group(self, group, provider, model):
-        """把存下来的来源和模型放回一组控件里；填充不算用户操作，别触发换来源的重置。"""
         group.providerBox.blockSignals(True)
         group.providerBox.setCurrentIndex(group.ids.index(provider))
         group.providerBox.blockSignals(False)
@@ -776,11 +795,12 @@ class Overlay:
         self.targetSwitch.setChecked(settings.reply_target())
         self._set_group(self.jev, settings.jev_provider(), settings.jev_model())
         self._set_group(self.draft, settings.draft_provider(), settings.draft_model())
-        self.baseEdit.setText(settings.draft_base_url())
+        self.jev.baseEdit.setText(settings.jev_custom_base_url())
+        self.draft.baseEdit.setText(settings.draft_base_url())
         self.thinkingSwitch.setChecked(settings.thinking())
         self.updateSwitch.setChecked(settings.check_update())
-        self.set_debug_switch(settings.debug_view())  # 屏蔽信号地拨，别在加载时开关一遍窗口
-        self._sync_model_fields()  # 上面屏蔽了信号，这里补一次
+        self.set_debug_switch(settings.debug_view())
+        self._sync_model_fields()
         self.settingsFeedback.hide()
 
     def _save(self):
@@ -788,15 +808,22 @@ class Overlay:
         relationship = relationship or self.relEdit.text().strip()
         jev_provider = self._provider_of(self.jev)
         draft_provider = self._provider_of(self.draft)
-        base = self.baseEdit.text().strip()
+        jev_base = self.jev.baseEdit.text().strip()
+        draft_base = self.draft.baseEdit.text().strip()
+
         if not relationship:
             self._settings_feedback("请填写关系背景，或选择一个已有选项。", error=True)
             self.relEdit.setFocus()
             return
-        if draft_provider in providers.CUSTOM and not base:
-            self._settings_feedback("自定义来源要填 Base URL。", error=True)
-            self.baseEdit.setFocus()
+        if jev_provider in providers.JEV_CUSTOM and not jev_base:
+            self._settings_feedback("自定义 System One 要填 Base URL。", error=True)
+            self.jev.baseEdit.setFocus()
             return
+        if draft_provider in providers.CUSTOM and not draft_base:
+            self._settings_feedback("自定义起草来源要填 Base URL。", error=True)
+            self.draft.baseEdit.setFocus()
+            return
+
         for group, provider in ((self.jev, jev_provider), (self.draft, draft_provider)):
             name = group.table[provider].name
             if not group.keyEdit.text().strip() and not group.stored_key():
@@ -804,27 +831,33 @@ class Overlay:
                 group.keyEdit.setFocus()
                 return
             if not group.modelBox.text().strip():
-                self._settings_feedback(f"{name} 请先获取并选择一个模型。", error=True)
+                self._settings_feedback(f"{name} 请填写模型名称，或先点获取模型。", error=True)
                 group.modelBox.setFocus()
                 return
+
         try:
-            settings.save(relationship, self.contextBox.value(),
-                          jev_provider_text=jev_provider,
-                          jev_key_text=self.jev.keyEdit.text().strip() or None,
-                          jev_model_text=self.jev.modelBox.text().strip(),
-                          draft_provider_text=draft_provider,
-                          llm_key_text=self.draft.keyEdit.text().strip() or None,
-                          draft_model_text=self.draft.modelBox.text().strip(),
-                          draft_base_url_text=base,
-                          reply_target_on=self.targetSwitch.isChecked(),
-                          style_text=self.styleEdit.text().strip(),
-                          thinking_on=self.thinkingSwitch.isChecked(),
-                          check_update_on=self.updateSwitch.isChecked())
+            settings.save(
+                relationship,
+                self.contextBox.value(),
+                jev_provider_text=jev_provider,
+                jev_key_text=self.jev.keyEdit.text().strip() or None,
+                jev_model_text=self.jev.modelBox.text().strip(),
+                jev_base_url_text=(jev_base if jev_provider in providers.JEV_CUSTOM else None),
+                draft_provider_text=draft_provider,
+                llm_key_text=self.draft.keyEdit.text().strip() or None,
+                draft_model_text=self.draft.modelBox.text().strip(),
+                draft_base_url_text=(draft_base if draft_provider in providers.CUSTOM else None),
+                reply_target_on=self.targetSwitch.isChecked(),
+                style_text=self.styleEdit.text().strip(),
+                thinking_on=self.thinkingSwitch.isChecked(),
+                check_update_on=self.updateSwitch.isChecked(),
+            )
         except Exception:
             self._settings_feedback("保存失败，请检查配置文件是否可写后重试。", error=True)
             return
+
         self._load_settings()
-        self._render_targets()  # 开关刚改过，回到首页时这一行该显该藏得重算一次
+        self._render_targets()
         self._settings_feedback("设置已保存，将用于下一次回复。")
         self.setupButton.hide()
         if not self.cands and not self._busy:
