@@ -7,7 +7,6 @@ main.py / app / core 不进包，发布后从 exe 同目录读取，便于直接
 from PyInstaller.utils.hooks import collect_all
 
 hiddenimports = [
-    # 外置源码会直接 import 的基础依赖。第三方大包下面再 collect_all。
     "numpy", "cv2", "PIL", "yaml", "pyclipper", "shapely",
     "win32api", "win32con", "win32gui", "win32clipboard", "win32process",
 ]
@@ -42,8 +41,8 @@ excludes = [
 )]
 
 a = Analysis(
-    ["dev/DevBootstrap.py"],
-    pathex=[],
+    ["DevBootstrap.py"],
+    pathex=["dev"],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
