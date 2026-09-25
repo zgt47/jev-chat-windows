@@ -1,9 +1,7 @@
 name: release
 
-# 正常规则不变；main 分支只为本次 v0.1.12 发布临时开放一次。
 on:
   push:
-    tags: ['v*']
     branches: ['main']
   workflow_dispatch:
 
@@ -12,7 +10,6 @@ permissions:
 
 jobs:
   build:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'release: v0.1.12' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,14 +17,7 @@ jobs:
       - name: 写入版本号
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            $ver = $env:GITHUB_REF_NAME -replace '^v',''
-          } elseif ($env:GITHUB_EVENT_NAME -eq 'push') {
-            $ver = '0.1.12'
-          } else {
-            $ver = $env:GITHUB_SHA.Substring(0, 7)
-          }
-          Set-Content -Path app/version.py -Value ('VERSION = "' + $ver + '"') -Encoding utf8
+          Set-Content -Path app/version.py -Value 'VERSION = "0.1.12"' -Encoding utf8
 
       - uses: actions/setup-python@v5
         with:
@@ -46,33 +36,23 @@ jobs:
         run: |
           $exe = 'dist\jev-chat-windows\jev-chat-windows.exe'
           if (-not (Test-Path $exe)) { throw "exe 没生成：$exe" }
-          if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            $ver = $env:GITHUB_REF_NAME
-          } elseif ($env:GITHUB_EVENT_NAME -eq 'push') {
-            $ver = 'v0.1.12'
-          } else {
-            $ver = $env:GITHUB_SHA.Substring(0, 7)
-          }
-          $zip = "jev-chat-windows-$ver.zip"
+          $zip = "jev-chat-windows-v0.1.12.zip"
           Copy-Item -Path LICENSE, NOTICE -Destination 'dist\jev-chat-windows'
           Compress-Archive -Path 'dist\jev-chat-windows' -DestinationPath $zip
           Add-Content -Path $env:GITHUB_OUTPUT -Value "zip=$zip"
-          "{0}  {1:N1} MB" -f $zip, ((Get-Item $zip).Length / 1MB)
 
       - name: 上传构建产物
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: jev-chat-windows
           path: '*.zip'
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: 发 Release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.head_commit.message == 'release: v0.1.12' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.1.12' }}
-          target_commitish: ${{ github.sha }}
+          tag_name: v0.1.12
+          target_commitish: main
           files: ${{ steps.pack.outputs.zip }}
           body: ""
           generate_release_notes: false
