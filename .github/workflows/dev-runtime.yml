@@ -50,10 +50,16 @@ jobs:
           Copy-Item 'requirements.txt','LICENSE','NOTICE','DEV使用说明.md' $out -Force
           Copy-Item 'dev\更新开发源码.ps1','dev\更新开发源码.cmd' $out -Force
 
-          Add-Type -TypeDefinition (Get-Content 'dev\DevLauncher.cs' -Raw) `
-            -OutputAssembly (Join-Path $out 'JevChat-Dev.exe') `
-            -OutputType WindowsApplication `
-            -ReferencedAssemblies 'System.Windows.Forms.dll','System.dll'
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { throw "找不到 Windows C# 编译器：$csc" }
+          & $csc /nologo /target:winexe /optimize+ `
+            /reference:System.Windows.Forms.dll `
+            /out:"$out\JevChat-Dev.exe" `
+            "dev\DevLauncher.cs"
+          if ($LASTEXITCODE -ne 0) { throw "开发版启动器编译失败，csc=$LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $out 'JevChat-Dev.exe'))) {
+            throw "开发版启动器没有生成"
+          }
 
           Get-ChildItem $out | Select-Object Name,Length
 
