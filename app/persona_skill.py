@@ -218,10 +218,15 @@ def set_default(skill_id: str) -> None:
 
 
 def effective(persona_id: str | None = None) -> dict | None:
-    """解析会话人格：跟随默认 / 禁用 / 指定人格。"""
+    """解析会话人格：跟随默认 / 禁用 / 指定人格。
+
+    指定人格后来被删除时自动回退默认人格；明确选择“不使用人格”则绝不回退。
+    """
     if persona_id == NO_PERSONA:
         return None
     data = load(persona_id)
+    if not data.get("id") and persona_id not in (None, "", DEFAULT_PERSONA):
+        data = load(DEFAULT_PERSONA)
     if not data.get("id") or not data.get("enabled"):
         return None
     return data
