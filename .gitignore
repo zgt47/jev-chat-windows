@@ -19,3 +19,4 @@ dist/
 *.spec.bak
 chat_history.json
 knowledge.json
+persona_skill.json
