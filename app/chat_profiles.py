@@ -69,6 +69,10 @@ def get(chat: str) -> dict:
         aliases = [str(x).strip() for x in (item.get("aliases") or []) if str(x).strip()]
         chat_type = str(item.get("chat_type") or _DEFAULT_CHAT_TYPE).strip()
         persona_id = str(item.get("persona_id") or "__none__").strip()
+        if persona_id == "__default__":
+            # 旧版曾自动把所有会话保存成“跟随默认人格”。
+            # 新版每个客户独立选择，不再让旧默认设置继续联动所有会话。
+            persona_id = "__none__"
         if chat_type not in _CHAT_TYPES:
             chat_type = _DEFAULT_CHAT_TYPE
         return {

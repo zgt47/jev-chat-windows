@@ -28,7 +28,7 @@ def build(title: str, messages: list) -> dict:
     matched_notes = knowledge.match(title, messages)
     if matched_notes:
         relationship += "\n知识库背景（只把它当事实，不要编造）：\n" + "\n".join(
-            f"- {note['title'] or '笔记'}：{note['content']}" for note in matched_notes
+            f"- {note['content']}" for note in matched_notes
         )
 
     persona_id = profile.get("persona_id", persona_skill.DEFAULT_PERSONA)
