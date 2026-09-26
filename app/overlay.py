@@ -2136,6 +2136,7 @@ class Overlay:
 
         self._load_profile()
         self._refresh_profile_summary()
+        self._refresh_persona_summary()
         self._render_targets()
         self._profile_feedback(f"已保存「{chat}」的会话关系。")
         self.set_status("会话关系已保存，将用于下一次回复", "success")
@@ -2363,6 +2364,8 @@ class Overlay:
         self.jev.keyEdit.clear()
         self.draft.keyEdit.clear()
         self.pages.setCurrentWidget(self.home)
+        self._refresh_profile_summary()
+        self._refresh_persona_summary()
         self.settingsButton.setEnabled(True)
 
     def _prepare_module_open(self):
