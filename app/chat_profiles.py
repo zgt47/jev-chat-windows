@@ -63,12 +63,14 @@ def get(chat: str) -> dict:
     if isinstance(item, dict):
         relationship = str(item.get("relationship") or _DEFAULT_RELATIONSHIP).strip()
         style = str(item.get("style") or _DEFAULT_STYLE).strip()
+        notes = str(item.get("notes") or "").strip()
         chat_type = str(item.get("chat_type") or _DEFAULT_CHAT_TYPE).strip()
         if chat_type not in _CHAT_TYPES:
             chat_type = _DEFAULT_CHAT_TYPE
         return {
             "relationship": relationship,
             "style": style,
+            "notes": notes,
             "chat_type": chat_type,
             "saved": True,
             "legacy": False,
@@ -78,6 +80,7 @@ def get(chat: str) -> dict:
     return {
         "relationship": relationship,
         "style": style or _DEFAULT_STYLE,
+        "notes": "",
         "chat_type": _DEFAULT_CHAT_TYPE,
         "saved": False,
         "legacy": legacy,
@@ -96,10 +99,12 @@ def chat_type(chat: str) -> str:
     return get(chat)["chat_type"]
 
 
-def save(chat: str, relationship: str, style: str = _DEFAULT_STYLE, chat_type: str = _DEFAULT_CHAT_TYPE) -> None:
+def save(chat: str, relationship: str, style: str = _DEFAULT_STYLE,
+         chat_type: str = _DEFAULT_CHAT_TYPE, notes: str = "") -> None:
     chat = str(chat or "").strip()
     relationship = str(relationship or "").strip()
     style = str(style or _DEFAULT_STYLE).strip()
+    notes = str(notes or "").strip()
     chat_type = str(chat_type or _DEFAULT_CHAT_TYPE).strip()
     if not chat:
         raise ValueError("尚未识别到会话")
@@ -112,6 +117,7 @@ def save(chat: str, relationship: str, style: str = _DEFAULT_STYLE, chat_type: s
     data[chat] = {
         "relationship": relationship,
         "style": style,
+        "notes": notes,
         "chat_type": chat_type,
     }
 

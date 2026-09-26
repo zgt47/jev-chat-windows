@@ -5,11 +5,11 @@ from datetime import datetime
 from math import isfinite
 from types import SimpleNamespace
 
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import QObject, QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QPushButton, QSizeGrip, QSizePolicy,
-    QStackedWidget, QVBoxLayout, QWidget,
+    QApplication, QFrame, QHBoxLayout, QMenu, QPushButton, QSizeGrip, QSizePolicy,
+    QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
     BodyLabel, CardWidget, CheckBox, ComboBox, EditableComboBox, FluentIcon as FIF,
@@ -145,14 +145,67 @@ class _TitleBar(QWidget):
 
 
 class _MainWindow(QWidget):
-    """窗口大小变了就叫 Overlay 重新排布；断点没跨过时 _relayout 自己不做事，这里不用防抖。"""
-    def __init__(self, relayout):
+    """主窗：关闭按钮交给 Overlay 决定是进托盘还是真退出。"""
+    def __init__(self, relayout, on_close):
         super().__init__()
         self._relayout = relayout
+        self._on_close = on_close
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._relayout(event.size().width(), event.size().height())
+
+    def closeEvent(self, event):
+        self._on_close(event)
+
+
+class _BubbleButton(QPushButton):
+    """收起后的悬浮球：点击展开，拖动可移动。"""
+    def __init__(self, owner, parent=None):
+        super().__init__("Jev", parent)
+        self.owner = owner
+        self._press = None
+        self._start = None
+        self._moved = False
+        self.setFixedSize(58, 58)
+        self.setStyleSheet(
+            "QPushButton { background:#18794e; color:white; border:none; border-radius:29px;"
+            " font-size:14px; font-weight:600; }"
+            "QPushButton:hover { background:#146c45; }"
+        )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press = event.globalPosition().toPoint()
+            self._start = self.window().pos()
+            self._moved = False
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._press is not None and event.buttons() & Qt.LeftButton:
+            now = event.globalPosition().toPoint()
+            delta = now - self._press
+            if delta.manhattanLength() > 4:
+                self._moved = True
+                self.window().move(self._start + delta)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._press is not None:
+            moved = self._moved
+            self._press = self._start = None
+            self._moved = False
+            if moved:
+                self.owner._save_window_state()
+            else:
+                self.owner._expand_page()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class _ReplyCard(_Surface):
@@ -220,8 +273,12 @@ class Overlay:
         self.targets = {}  # {会话名: ([发言人], 当前回复对象)}
         self._chat = ""  # 微信当前开着的会话
         self._shown = ""  # 界面上正在看的会话（浏览时和上面不一样）
-        self.win = _MainWindow(self._relayout)
+        self._force_quit = False
+        self._tray_notice_shown = False
+        self.app.setQuitOnLastWindowClosed(False)
+        self.win = _MainWindow(self._relayout, self._close_requested)
         self.win.setObjectName("assistantWindow")
+        self.win.setAttribute(Qt.WA_TranslucentBackground, True)
         self.win.setWindowTitle("JevChat-Windows")
         flags = Qt.Window | Qt.FramelessWindowHint
         if settings.always_on_top():
@@ -240,10 +297,14 @@ class Overlay:
         title = QHBoxLayout(header)
         title.setContentsMargins(18, 12, 10, 10)
         title.setSpacing(8)
-        name = _label("Jev", 20, "#233c2f", True)
-        name.setFixedWidth(40)
-        name.setAttribute(Qt.WA_TransparentForMouseEvents)
-        title.addWidget(name)
+        self.titleLayout = title
+        self.bubbleButton = _BubbleButton(self, header)
+        self.bubbleButton.hide()
+        title.addWidget(self.bubbleButton)
+        self.nameLabel = _label("Jev", 20, "#233c2f", True)
+        self.nameLabel.setFixedWidth(40)
+        self.nameLabel.setAttribute(Qt.WA_TransparentForMouseEvents)
+        title.addWidget(self.nameLabel)
         title.addStretch(1)
         self.captureSwitch = SwitchButton(header)
         self.captureSwitch.setOnText("采集中")
@@ -268,8 +329,10 @@ class Overlay:
         title.addWidget(self.expandButton)
         self.settingsButton = _tool(FIF.SETTING, "全局设置", self.open_settings, header)
         title.addWidget(self.settingsButton)
-        title.addWidget(_tool(FIF.REMOVE, "最小化", self.win.showMinimized, header))
-        title.addWidget(_tool(FIF.CLOSE, "关闭助手", self.win.close, header))
+        self.minButton = _tool(FIF.REMOVE, "最小化", self.win.showMinimized, header)
+        title.addWidget(self.minButton)
+        self.closeButton = _tool(FIF.CLOSE, "关闭到系统托盘", self.win.close, header)
+        title.addWidget(self.closeButton)
         outer.addWidget(header)
         self.updateBar = QWidget(self.win)
         update_row = QHBoxLayout(self.updateBar)
@@ -313,8 +376,17 @@ class Overlay:
         screen = self.app.primaryScreen().availableGeometry()
         self._normalMinHeight = min(360, screen.height() - 32)
         self.win.setMinimumHeight(self._normalMinHeight)
-        self.win.resize(min(440, screen.width() - 32), min(820, screen.height() - 48))
-        self.win.move(screen.right() - self.win.width() - 20, screen.top() + 24)
+        saved = settings.window_state()
+        width = min(640, max(320, int(saved.get("w", min(440, screen.width() - 32)))))
+        height = min(screen.height() - 48, max(self._normalMinHeight, int(saved.get("h", min(820, screen.height() - 48)))))
+        self.win.resize(width, height)
+        x = int(saved.get("x", screen.right() - width - 20))
+        y = int(saved.get("y", screen.top() + 24))
+        x = max(screen.left(), min(x, screen.right() - width + 1))
+        y = max(screen.top(), min(y, screen.bottom() - height + 1))
+        self.win.move(x, y)
+        self._apply_opacity()
+        self._setup_tray()
         self._relayout(self.win.width(), self.win.height())  # resizeEvent 补不到构造时这一次
         self.set_status("等待新消息" if settings.has_key() else "需要配置模型",
                         "idle" if settings.has_key() else "warning")
@@ -372,6 +444,11 @@ class Overlay:
         reply_actions = QHBoxLayout()
         reply_actions.setSpacing(8)
         reply_actions.addStretch(1)
+        self.manualAnalyzeButton = PushButton("分析当前对话")
+        self.manualAnalyzeButton.setToolTip("使用当前已经识别到的聊天记录重新跑完整 Jev 分析")
+        self.manualAnalyzeButton.clicked.connect(self._regenerate_clicked)
+        self.manualAnalyzeButton.setEnabled(False)
+        reply_actions.addWidget(self.manualAnalyzeButton)
         self.clearRepliesButton = PushButton("清空建议")
         self.clearRepliesButton.setToolTip("清掉当前会话这一批回复建议，不删除聊天记录")
         self.clearRepliesButton.clicked.connect(self._clear_replies_clicked)
@@ -459,6 +536,8 @@ class Overlay:
         insight_box.addWidget(self.summary)
         self.intent = _label("", 12, _MUTED)
         insight_box.addWidget(self.intent)
+        self.judgmentExtra = _label("", 12, _MUTED)
+        insight_box.addWidget(self.judgmentExtra)
         self.insight.setToolTip("根据当前聊天片段推测，可能理解有偏差。紧张度为 0–9 的参考评分。")
         self.insight.hide()
         body.addWidget(self.insight)
@@ -576,6 +655,15 @@ class Overlay:
         box.addWidget(self.profileStyleEdit)
         box.addWidget(self._hint("默认「自然克制」：正常、克制、短句、不装熟。也可以选其他风格或自定义。"))
 
+        notes_label = _label("联系人备注（可选）", 13)
+        box.addWidget(notes_label)
+        self.profileNotesEdit = PlainTextEdit()
+        self.profileNotesEdit.setPlaceholderText("例如：不喜欢被催；十月准备换工作；之前答应过周末去吃饭")
+        self.profileNotesEdit.setAccessibleName("当前会话联系人备注")
+        self.profileNotesEdit.setFixedHeight(86)
+        box.addWidget(self.profileNotesEdit)
+        box.addWidget(self._hint("只保存在本机；分析这个会话时会作为背景信息提供给 Jev 和起草模型。"))
+
         body.addWidget(profile)
         self.profileFeedback = _label("", 13, _GREEN)
         self.profileFeedback.hide()
@@ -619,6 +707,42 @@ class Overlay:
         box.addWidget(self._hint(
             "生成和判断时看最近这么多条消息。太少会丢上下文，太多会稀释重点，建议 6–12。"
         ))
+
+        auto_row = QHBoxLayout()
+        auto_row.addWidget(_label("对方发消息时自动分析", 13), 1)
+        self.autoAnalyzeSwitch = SwitchButton()
+        self.autoAnalyzeSwitch.setOnText("开")
+        self.autoAnalyzeSwitch.setOffText("关")
+        auto_row.addWidget(self.autoAnalyzeSwitch)
+        box.addLayout(auto_row)
+        box.addWidget(self._hint("关闭后仍会采集聊天，但不会自动调用模型；需要时点首页「分析当前对话」。"))
+
+        box.addWidget(_label("会话白名单", 13))
+        self.whitelistEdit = PlainTextEdit()
+        self.whitelistEdit.setPlaceholderText("每行一个关键词；留空 = 所有会话\n例如：家人群\n小王")
+        self.whitelistEdit.setFixedHeight(76)
+        box.addWidget(self.whitelistEdit)
+        box.addWidget(self._hint("只限制自动分析；标题包含任一关键词才自动调用模型，手动分析不受限制。"))
+
+        opacity_label = _label("窗口不透明度", 13)
+        box.addWidget(opacity_label)
+        self.opacityBox = SpinBox()
+        self.opacityBox.setRange(60, 100)
+        self.opacityBox.setSuffix("%")
+        box.addWidget(self.opacityBox)
+
+        history_row = QHBoxLayout()
+        history_row.addWidget(_label("记录聊天历史（仅本机）", 13), 1)
+        self.historySwitch = SwitchButton()
+        self.historySwitch.setOnText("开")
+        self.historySwitch.setOffText("关")
+        history_row.addWidget(self.historySwitch)
+        box.addLayout(history_row)
+        self.historyLimitBox = SpinBox()
+        self.historyLimitBox.setRange(10, 100)
+        self.historyLimitBox.setSuffix(" 条")
+        box.addWidget(self.historyLimitBox)
+        box.addWidget(self._hint("默认关闭。开启后按会话保存最近聊天，重启后仍可给模型参考；文件只在程序目录旁。"))
 
         target_row = QHBoxLayout()
         target_row.addWidget(_label("群聊指定回复对象", 13), 1)
@@ -879,6 +1003,11 @@ class Overlay:
 
     def _load_settings(self):
         self.contextBox.setValue(settings.context())
+        self.autoAnalyzeSwitch.setChecked(settings.auto_analyze())
+        self.whitelistEdit.setPlainText("\n".join(settings.whitelist()))
+        self.opacityBox.setValue(settings.overlay_opacity())
+        self.historySwitch.setChecked(settings.record_history())
+        self.historyLimitBox.setValue(settings.history_limit())
         self.targetSwitch.setChecked(settings.reply_target())
         self._set_group(self.jev, settings.jev_provider(), settings.jev_model())
         self._set_group(self.draft, settings.draft_provider(), settings.draft_model())
@@ -928,6 +1057,11 @@ class Overlay:
                 draft_model_text=self.draft.modelBox.text().strip(),
                 draft_base_url_text=(draft_base if draft_provider in providers.CUSTOM else None),
                 reply_target_on=self.targetSwitch.isChecked(),
+                auto_analyze_on=self.autoAnalyzeSwitch.isChecked(),
+                whitelist_items=self.whitelistEdit.toPlainText().splitlines(),
+                overlay_opacity_n=self.opacityBox.value(),
+                record_history_on=self.historySwitch.isChecked(),
+                history_limit_n=self.historyLimitBox.value(),
                 thinking_on=self.thinkingSwitch.isChecked(),
                 check_update_on=self.updateSwitch.isChecked(),
             )
@@ -936,6 +1070,7 @@ class Overlay:
             return
 
         self._load_settings()
+        self._apply_opacity()
         self._render_targets()
         self._settings_feedback("全局设置已保存，将用于下一次回复。")
         self.setupButton.hide()
@@ -972,6 +1107,7 @@ class Overlay:
         custom_style = _STYLE_PRESETS[preset_index][1] is None
         self.profileStyleEdit.setText(style if custom_style else "")
         self.profileStyleEdit.setVisible(custom_style)
+        self.profileNotesEdit.setPlainText(profile.get("notes", ""))
 
         if not chat:
             state = "先切到一个聊天会话，再保存关系资料。"
@@ -1007,7 +1143,7 @@ class Overlay:
                 return
 
         try:
-            chat_profiles.save(chat, relationship, style, chat_type)
+            chat_profiles.save(chat, relationship, style, chat_type, self.profileNotesEdit.toPlainText().strip())
         except Exception:
             self._profile_feedback("保存失败，请检查程序目录是否可写。", error=True)
             return
@@ -1089,6 +1225,7 @@ class Overlay:
         """同步「清空建议 / 重新生成」的可用状态。"""
         has_chat = bool(self._shown or self._chat)
         browsing = bool(self._chat) and self._shown != self._chat
+        self.manualAnalyzeButton.setEnabled(has_chat and not browsing and not self._busy)
         self.clearRepliesButton.setEnabled(bool(self.cands) and not self._busy)
         self.regenerateButton.setEnabled(has_chat and not browsing and not self._busy)
 
@@ -1152,37 +1289,120 @@ class Overlay:
         self.win.show()
         self.win.move(pos)
 
+    def _save_window_state(self):
+        if self._collapsed and self._expandedSize is not None:
+            size = self._expandedSize
+        else:
+            size = self.win.size()
+        pos = self.win.pos()
+        try:
+            settings.save_window_state(pos.x(), pos.y(), size.width(), size.height())
+        except Exception:
+            pass
+
     def _collapse_page(self):
-        """收起后只保留顶部控制栏；页面和底部都隐藏。"""
+        """收起成可拖动的 Jev 悬浮球。"""
         if self._collapsed:
             return
+        self._save_window_state()
         self._collapsed = True
         self._expandedSize = self.win.size()
         self._updateWasVisible = self.updateBar.isVisible()
         self.updateBar.hide()
         self.pages.hide()
         self.footerBar.hide()
-        self.expandButton.show()
-        self.win.setMinimumHeight(0)
-        self.win.setMaximumHeight(16777215)
-        height = max(52, self.header.sizeHint().height() + 2)
-        self.win.setFixedHeight(height)
+        for w in (self.nameLabel, self.captureSwitch, self.topmostSwitch, self.expandButton,
+                  self.settingsButton, self.minButton, self.closeButton):
+            w.hide()
+        self.bubbleButton.show()
+        self.titleLayout.setContentsMargins(2, 2, 2, 2)
+        self.win.setStyleSheet("QWidget#assistantWindow { background: transparent; border: none; }")
+        self.win.setMinimumSize(0, 0)
+        self.win.setMaximumSize(16777215, 16777215)
+        self.win.setFixedSize(62, 62)
 
     def _expand_page(self):
-        """恢复收起前的窗口大小。"""
+        """从悬浮球恢复完整页面。"""
         if not self._collapsed:
             return
         self._collapsed = False
-        self.win.setMinimumHeight(0)
-        self.win.setMaximumHeight(16777215)
+        self.win.setMinimumSize(0, 0)
+        self.win.setMaximumSize(16777215, 16777215)
+        self.bubbleButton.hide()
+        for w in (self.nameLabel, self.captureSwitch, self.topmostSwitch,
+                  self.settingsButton, self.minButton, self.closeButton):
+            w.show()
+        self.expandButton.hide()
+        self.titleLayout.setContentsMargins(18, 12, 10, 10)
+        self.win.setStyleSheet(
+            "QWidget#assistantWindow { background: #f5f7f6; border: 1px solid #dce3de; border-radius: 14px; }"
+        )
         self.pages.show()
         self.footerBar.show()
         if self._updateWasVisible:
             self.updateBar.show()
-        self.expandButton.hide()
+        self.win.setMinimumWidth(320)
+        self.win.setMaximumWidth(640)
         self.win.setMinimumHeight(self._normalMinHeight)
         if self._expandedSize is not None:
             self.win.resize(self._expandedSize)
+        self._apply_opacity()
+
+    def _apply_opacity(self):
+        self.win.setWindowOpacity(settings.overlay_opacity() / 100.0)
+
+    def _setup_tray(self):
+        self.tray = QSystemTrayIcon(self.app.style().standardIcon(QStyle.SP_ComputerIcon), self.win)
+        self.tray.setToolTip("JevChat-Windows")
+        menu = QMenu()
+        show_action = QAction("显示主窗口", menu)
+        show_action.triggered.connect(self._show_from_tray)
+        menu.addAction(show_action)
+        bubble_action = QAction("收起为悬浮球", menu)
+        bubble_action.triggered.connect(self._show_as_bubble)
+        menu.addAction(bubble_action)
+        menu.addSeparator()
+        quit_action = QAction("退出 Jev", menu)
+        quit_action.triggered.connect(self._quit_app)
+        menu.addAction(quit_action)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(
+            lambda reason: self._show_from_tray()
+            if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None
+        )
+        self.tray.show()
+
+    def _close_requested(self, event):
+        if self._force_quit:
+            event.accept()
+            return
+        self._save_window_state()
+        self.win.hide()
+        if not self._tray_notice_shown:
+            self.tray.showMessage("Jev 仍在运行", "窗口已收进系统托盘；右键托盘图标可真正退出。",
+                                  QSystemTrayIcon.Information, 2500)
+            self._tray_notice_shown = True
+        event.ignore()
+
+    def _show_from_tray(self):
+        if self._collapsed:
+            self._expand_page()
+        self.win.show()
+        self.win.raise_()
+        self.win.activateWindow()
+
+    def _show_as_bubble(self):
+        self.win.show()
+        if not self._collapsed:
+            self._collapse_page()
+        self.win.raise_()
+
+    def _quit_app(self):
+        self._force_quit = True
+        self._save_window_state()
+        if hasattr(self, "tray"):
+            self.tray.hide()
+        self.app.quit()
 
     def _capture_toggled(self, on):
         """用户自己拨的开关：界面先改，再通知父进程去开/停采集。"""
@@ -1443,15 +1663,39 @@ class Overlay:
         reply_to = result.get("reply_to")
         self.insightTitle.setText(f"对话参考 · 回复给 {reply_to}" if reply_to else "对话参考")
         answers = result.get("answers") or {}
-        self.summary.setText("建议：" + _choice(answers, "best_action"))
-        self.intent.setText("可能意图 · " + _choice(answers, "true_intent") +
-                            "\n可能需要 · " + _choice(answers, "she_needs"))
-        score = (answers.get("danger_level") or {}).get("score")
+
+        def conf(name):
+            value = (answers.get(name) or {}).get("confidence")
+            return f" · 把握 {round(value * 100)}%" if isinstance(value, (int, float)) and 0 <= value <= 1 else ""
+
+        self.summary.setText("建议：" + _choice(answers, "best_action") + conf("best_action"))
+        self.intent.setText(
+            "可能意图 · " + _choice(answers, "true_intent") + conf("true_intent") +
+            "\n可能需要 · " + _choice(answers, "she_needs") + conf("she_needs")
+        )
+
+        extra = []
+        should = (answers.get("should_reply_now") or {}).get("noul")
+        if isinstance(should, (int, float)) and 0 <= should <= 1:
+            extra.append(("可给实质内容" if should >= 0.5 else "先别给实质内容") + f" · {round((should if should >= 0.5 else 1-should) * 100)}%")
+        literal = (answers.get("literal_question") or {}).get("noul")
+        if isinstance(literal, (int, float)) and 0 <= literal <= 1:
+            extra.append(("偏字面意思" if literal >= 0.5 else "可能有潜台词") + f" · {round((literal if literal >= 0.5 else 1-literal) * 100)}%")
+        resolved = (answers.get("tension_resolved") or {}).get("noul")
+        if isinstance(resolved, (int, float)) and 0 <= resolved <= 1:
+            extra.append(("紧张已缓解" if resolved >= 0.5 else "紧张未缓解") + f" · {round((resolved if resolved >= 0.5 else 1-resolved) * 100)}%")
+        self.judgmentExtra.setText("  ·  ".join(extra))
+
+        danger = answers.get("danger_level") or {}
+        score = danger.get("score")
+        dconf = danger.get("confidence")
         valid_score = isinstance(score, (int, float)) and isfinite(score) and 0 <= score <= 9
-        self.tension.setText(f"紧张度 {score:.0f}/9" if valid_score else "紧张度待判断")
+        dconf_text = f" · 把握 {round(dconf * 100)}%" if isinstance(dconf, (int, float)) and 0 <= dconf <= 1 else ""
+        self.tension.setText(f"危险 {score:.0f}/9{dconf_text}" if valid_score else "危险度待判断")
         color = "#996819" if valid_score and score >= 3 else _MUTED
         if valid_score and score >= 6:
             color = "#b44832"
+        self._set_bubble_danger(score if valid_score else None)
         qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
         setCustomStyleSheet(self.tension, qss, qss)
         self.empty.setVisible(not self.cands)
@@ -1463,6 +1707,17 @@ class Overlay:
         else:
             self.set_status("未生成可用回复，请等待下一条新消息。", "error")
         self._sync_reply_actions()
+
+    def _set_bubble_danger(self, score):
+        color = "#18794e"
+        if isinstance(score, (int, float)) and score >= 6:
+            color = "#b44832"
+        elif isinstance(score, (int, float)) and score >= 3:
+            color = "#b07a21"
+        self.bubbleButton.setStyleSheet(
+            f"QPushButton {{ background:{color}; color:white; border:none; border-radius:29px;"
+            " font-size:14px; font-weight:600; }}"
+        )
 
     def _clear_cards(self):
         for card in self.cards:

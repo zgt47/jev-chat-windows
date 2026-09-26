@@ -13,7 +13,7 @@ import threading
 import traceback
 from collections import deque
 
-from app import chat_profiles, settings, update, worker
+from app import chat_history, chat_profiles, settings, update, worker
 from app.capture import find_wechat_hwnd
 from app.fill import fill
 from app.overlay import Overlay
@@ -31,8 +31,17 @@ update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, 
 
 
 def chat_of(title):
-    return chats.setdefault(title, {"history": deque(maxlen=60), "result": None, "rev": 0,
-                                    "target": None, "senders": []})
+    if title in chats:
+        return chats[title]
+    saved = chat_history.load(title, settings.history_limit()) if settings.record_history() else []
+    history = deque(saved, maxlen=max(60, settings.history_limit()))
+    senders = []
+    for who, text, name in reversed(saved):
+        if who == "her" and name and name not in senders:
+            senders.append(name)
+    chats[title] = {"history": history, "result": None, "rev": 0,
+                    "target": None, "senders": senders}
+    return chats[title]
 
 
 def target_of(title):
@@ -108,7 +117,10 @@ def analyze_bg(msgs, title, revision, reply_to=None):
     """后台线程只跑网络调用，结果丢队列；UI 只在主线程的 tick 里动（Qt 不能跨线程碰）。"""
     try:
         profile = chat_profiles.get(title)
-        results.put(("ok", analyze(msgs, profile["relationship"], context=settings.context(),
+        relationship = profile["relationship"]
+        if profile.get("notes"):
+            relationship += "\n联系人备注：" + profile["notes"]
+        results.put(("ok", analyze(msgs, relationship, context=settings.context(),
                                    model=settings.draft_model() or None,
                                    provider=settings.draft_provider(),
                                    base_url=settings.draft_base_url() or None,
@@ -244,17 +256,39 @@ def drain():
         chat["rev"] += 1  # 这个会话有新消息了，它在跑的分析作废
         if title == ov.current_chat():  # 看的是别的会话就别把人家的候选划掉
             ov.invalidate_replies()
-        for who, name, text in new:
+        incoming = [(who, text, name) for who, name, text in new]
+        existing = list(chat["history"])
+        skip = 0
+        for n in range(min(len(existing), len(incoming)), 0, -1):
+            if existing[-n:] == incoming[:n]:
+                skip = n
+                break
+        fresh = incoming[skip:]
+        for who, text, name in fresh:
             chat["history"].append((who, text, name))
             ov.log_message(who, text, name, chat=title)
-            if who == "her" and name:  # 群里发过言的人，去重后最近的排最前
+            if who == "her" and name:
                 if name in chat["senders"]:
                     chat["senders"].remove(name)
                 chat["senders"].insert(0, name)
-        ov.set_targets(title, chat["senders"], target_of(title))  # 显不显示这一行由悬浮窗按开关决定
-        if new[-1][0] == "her":  # 只有对方最新说话才值得分析
+        if settings.record_history():
+            try:
+                chat_history.save(title, list(chat["history"]), max_keep=max(100, settings.history_limit() * 3))
+            except Exception:
+                pass
+        ov.set_targets(title, chat["senders"], target_of(title))
+        latest = incoming[-1] if incoming else None
+        if latest and latest[0] == "her":
             msgs = list(chat["history"])
-            if state["busy"]:
+            if not settings.chat_allowed(title):
+                state["rerun"] = None
+                ov.set_busy(False)
+                ov.set_status("已收到新消息，但当前会话不在自动分析白名单；可手动分析。", "idle")
+            elif not settings.auto_analyze():
+                state["rerun"] = None
+                ov.set_busy(False)
+                ov.set_status("已收到新消息；自动分析已关闭，可点「分析当前对话」。", "idle")
+            elif state["busy"]:
                 state["rerun"] = (title, msgs)
                 ov.set_busy(True)
             else:

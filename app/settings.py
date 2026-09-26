@@ -37,6 +37,10 @@ _DEFAULT_CONTEXT = 10
 _DEFAULT_JEV = "openrouter"
 _DEFAULT_DRAFT = "deepseek"
 _DEFAULT_ALWAYS_ON_TOP = True
+_DEFAULT_AUTO_ANALYZE = True
+_DEFAULT_OVERLAY_OPACITY = 96
+_DEFAULT_RECORD_HISTORY = False
+_DEFAULT_HISTORY_LIMIT = 30
 
 
 def _read(name: str, default=None):
@@ -121,6 +125,66 @@ def debug_view() -> bool:
 
 def always_on_top() -> bool:
     return bool(_read("always_on_top", _DEFAULT_ALWAYS_ON_TOP))
+
+
+def auto_analyze() -> bool:
+    return bool(_read("auto_analyze", _DEFAULT_AUTO_ANALYZE))
+
+
+def whitelist() -> list[str]:
+    value = _read("whitelist", [])
+    if isinstance(value, str):
+        value = value.splitlines()
+    if not isinstance(value, list):
+        return []
+    return [str(x).strip() for x in value if str(x).strip()]
+
+
+def chat_allowed(title: str) -> bool:
+    keys = whitelist()
+    if not keys:
+        return True
+    title = str(title or "").strip().lower()
+    return any(k.lower() in title for k in keys)
+
+
+def overlay_opacity() -> int:
+    try:
+        n = int(_read("overlay_opacity", _DEFAULT_OVERLAY_OPACITY))
+    except (TypeError, ValueError):
+        n = _DEFAULT_OVERLAY_OPACITY
+    return max(60, min(100, n))
+
+
+def record_history() -> bool:
+    return bool(_read("record_history", _DEFAULT_RECORD_HISTORY))
+
+
+def history_limit() -> int:
+    try:
+        n = int(_read("history_limit", _DEFAULT_HISTORY_LIMIT))
+    except (TypeError, ValueError):
+        n = _DEFAULT_HISTORY_LIMIT
+    return max(10, min(100, n))
+
+
+def window_state() -> dict:
+    value = _read("window_state", {})
+    return value if isinstance(value, dict) else {}
+
+
+def save_window_state(x: int, y: int, w: int, h: int) -> None:
+    """只更新窗口几何，不碰密钥和其它设置。"""
+    try:
+        with open(_CONFIG, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data["window_state"] = {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
+    with open(_CONFIG, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
 
 
 def _read_env(env_name: str) -> str:
@@ -210,6 +274,11 @@ def save(
     check_update_on: bool | None = None,
     debug_view_on: bool | None = None,
     always_on_top_on: bool | None = None,
+    auto_analyze_on: bool | None = None,
+    whitelist_items: list[str] | None = None,
+    overlay_opacity_n: int | None = None,
+    record_history_on: bool | None = None,
+    history_limit_n: int | None = None,
 ) -> None:
     """保存设置。空 key = 保留原 key；模型和 Base URL 可以显式传空串清掉。"""
     jev = (
@@ -240,6 +309,10 @@ def save(
     def flag(new, now):
         return now() if new is None else bool(new)
 
+    opacity = overlay_opacity() if overlay_opacity_n is None else max(60, min(100, int(overlay_opacity_n)))
+    history_n = history_limit() if history_limit_n is None else max(10, min(100, int(history_limit_n)))
+    wl = whitelist() if whitelist_items is None else [str(x).strip() for x in whitelist_items if str(x).strip()]
+
     data = {
         "relationship": relationship_text or relationship(),
         "context": n,
@@ -255,6 +328,12 @@ def save(
         "check_update": flag(check_update_on, check_update),
         "debug_view": flag(debug_view_on, debug_view),
         "always_on_top": flag(always_on_top_on, always_on_top),
+        "auto_analyze": flag(auto_analyze_on, auto_analyze),
+        "whitelist": wl,
+        "overlay_opacity": opacity,
+        "record_history": flag(record_history_on, record_history),
+        "history_limit": history_n,
+        "window_state": window_state(),
     }
 
     with open(_CONFIG, "w", encoding="utf-8") as f:

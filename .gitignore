@@ -17,3 +17,4 @@ wechat_probe.png
 build/
 dist/
 *.spec.bak
+chat_history.json
