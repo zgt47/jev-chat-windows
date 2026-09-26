@@ -6,7 +6,7 @@ from datetime import datetime
 from math import isfinite
 from types import SimpleNamespace
 
-from PySide6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap, QRegion
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QMenu, QPushButton, QSlider, QSizeGrip, QSizePolicy,
@@ -196,7 +196,7 @@ class _MainWindow(QWidget):
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() == event.WindowStateChange and self.isMinimized():
+        if event.type() == QEvent.WindowStateChange and self.isMinimized():
             QTimer.singleShot(0, self._on_minimize)
 
 
