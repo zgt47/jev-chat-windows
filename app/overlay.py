@@ -513,6 +513,14 @@ class Overlay:
 
         reply_actions = QHBoxLayout()
         reply_actions.setSpacing(8)
+        reply_actions.addWidget(_label("自动发送", 12, _MUTED))
+        self.autoSendSwitch = SwitchButton()
+        self.autoSendSwitch.setOnText("开")
+        self.autoSendSwitch.setOffText("关")
+        self.autoSendSwitch.setToolTip("开启后，Jev 完成判断和排序后会自动发送推荐回复")
+        self.autoSendSwitch.setChecked(settings.auto_send())
+        self.autoSendSwitch.checkedChanged.connect(self._auto_send_toggled)
+        reply_actions.addWidget(self.autoSendSwitch)
         reply_actions.addStretch(1)
         self.manualAnalyzeButton = PrimaryPushButton("分析当前对话")
         self.manualAnalyzeButton.setToolTip("用当前聊天记录重新执行 Jev 判断、起草和排序")
@@ -1039,6 +1047,16 @@ class Overlay:
         box.addLayout(auto_row)
         box.addWidget(self._hint("关闭后仍会采集聊天，但不会自动调用模型；需要时点首页「分析当前对话」。"))
 
+        send_delay_row = QHBoxLayout()
+        send_delay_row.addWidget(_label("自动发送延迟", 13), 1)
+        self.autoSendDelayBox = _NoWheelSpinBox()
+        self.autoSendDelayBox.setRange(1, 10)
+        self.autoSendDelayBox.setSuffix(" 秒")
+        self.autoSendDelayBox.setToolTip("推荐回复生成后等待这么久再发送；期间如果来了新消息，这次自动发送会取消")
+        send_delay_row.addWidget(self.autoSendDelayBox)
+        box.addLayout(send_delay_row)
+        box.addWidget(self._hint("用于首页的「自动发送」。高风险对话、群聊或期间出现新消息时不会自动发出。"))
+
         box.addWidget(_label("会话白名单", 13))
         self.whitelistEdit = PlainTextEdit()
         self.whitelistEdit.setPlaceholderText("每行一个关键词；留空 = 所有会话\n例如：家人群\n小王")
@@ -1403,6 +1421,10 @@ class Overlay:
     def _load_settings(self):
         self.contextBox.setValue(settings.context())
         self.autoAnalyzeSwitch.setChecked(settings.auto_analyze())
+        self.autoSendDelayBox.setValue(settings.auto_send_delay())
+        self.autoSendSwitch.blockSignals(True)
+        self.autoSendSwitch.setChecked(settings.auto_send())
+        self.autoSendSwitch.blockSignals(False)
         self.whitelistEdit.setPlainText("\n".join(settings.whitelist()))
         self.transparencySlider.blockSignals(True)
         self.transparencySlider.setValue(settings.transparency())
@@ -1460,6 +1482,8 @@ class Overlay:
                 draft_base_url_text=(draft_base if draft_provider in providers.CUSTOM else None),
                 reply_target_on=self.targetSwitch.isChecked(),
                 auto_analyze_on=self.autoAnalyzeSwitch.isChecked(),
+                auto_send_on=self.autoSendSwitch.isChecked(),
+                auto_send_delay_n=self.autoSendDelayBox.value(),
                 whitelist_items=self.whitelistEdit.toPlainText().splitlines(),
                 transparency_n=self.transparencySlider.value(),
                 record_history_on=self.historySwitch.isChecked(),
@@ -1638,6 +1662,23 @@ class Overlay:
         self.draft.keyEdit.clear()
         self.pages.setCurrentWidget(self.home)
         self.settingsButton.setEnabled(True)
+
+    def _auto_send_toggled(self, on):
+        """首页快捷开关：立即保存，客服模式不必再进入设置页。"""
+        try:
+            settings.save(auto_send_on=on)
+        except Exception:
+            self.autoSendSwitch.blockSignals(True)
+            self.autoSendSwitch.setChecked(not on)
+            self.autoSendSwitch.blockSignals(False)
+            self.set_status("自动发送开关保存失败，请检查配置文件是否可写。", "error")
+            return
+        self.set_status(
+            "自动发送已开启：推荐回复会在安全检查通过后自动发出。"
+            if on else
+            "自动发送已关闭，回复只会显示在 Jev 中。",
+            "success" if on else "idle",
+        )
 
     def _sync_reply_actions(self):
         """首页只保留一个明确动作：分析当前对话。"""

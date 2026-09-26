@@ -15,7 +15,7 @@ from collections import deque
 
 from app import chat_history, chat_profiles, knowledge, settings, update, worker
 from app.capture import find_wechat_hwnd
-from app.fill import fill
+from app.fill import fill, send
 from app.overlay import Overlay
 from app.version import VERSION
 from core.engine import analyze
@@ -25,7 +25,8 @@ from core.engine import analyze
 # 只是缓冲区，实际喂模型几条由设置里的「参考上下文」决定
 # senders：这个群里发过言的人，去重、最近的排最前；target：用户挑的回复对象（None = 跟着最近那个走）
 chats = {}
-state = {"area": None, "busy": False, "rerun": None, "hwnd": None, "chat": ""}
+state = {"area": None, "busy": False, "rerun": None, "hwnd": None, "chat": "",
+         "pending_send": None}
 results = queue.Queue()
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
 
@@ -138,6 +139,72 @@ def fill_reply(text):
         if target:
             text = f"@{target} " + text  # 纯文本，微信不认成真正的 @，只是让群里看得出在跟谁说
     fill(state["hwnd"], state["area"], text)
+
+
+def queue_auto_send(title, result, revision):
+    """客服模式自动发送：只排队，不在模型结果刚回来的一瞬间直接发。"""
+    if not settings.auto_send():
+        return
+    if title != state["chat"] or title != ov.current_chat():
+        return
+
+    chat = chat_of(title)
+    if not chat["history"] or chat["history"][-1][0] != "her":
+        return
+
+    # 群聊默认不自动发送，避免误 @ / 误回复多人会话。
+    profile = chat_profiles.get(title)
+    if profile.get("chat_type") == "group" or chat.get("senders"):
+        ov.set_status("自动发送未执行：群聊默认需要人工确认。", "warning")
+        return
+
+    danger = ((result.get("answers") or {}).get("danger_level") or {}).get("score")
+    if isinstance(danger, (int, float)) and danger >= 6:
+        ov.set_status(f"自动发送已暂停：当前危险度 {danger:.0f}/9，需要人工确认。", "warning")
+        return
+
+    text = str(result.get("best_reply") or "").strip()
+    if not text:
+        return
+
+    token = (title, revision, text)
+    state["pending_send"] = token
+    delay = settings.auto_send_delay()
+    ov.set_status(f"客服自动发送：{delay} 秒后发送推荐回复；新消息到来会自动取消。", "warning")
+    ov.after(delay * 1000, lambda t=token: perform_auto_send(t))
+
+
+def perform_auto_send(token):
+    """延迟结束后再次核对会话、版本和开关，任何变化都取消。"""
+    if state.get("pending_send") != token:
+        return
+    state["pending_send"] = None
+
+    title, revision, text = token
+    if not settings.auto_send():
+        return
+    if title != state["chat"] or title != ov.current_chat():
+        return
+    if chat_of(title)["rev"] != revision:
+        return
+    if not chat_of(title)["history"] or chat_of(title)["history"][-1][0] != "her":
+        return
+    if state["hwnd"] is None or state["area"] is None:
+        ov.set_status("自动发送取消：当前聊天窗口不可用。", "warning")
+        return
+
+    try:
+        fill_reply(text)
+        # 给微信一次重绘机会，确保粘贴内容已经进入输入框。
+        import time
+        time.sleep(0.15)
+        send(state["hwnd"], state["area"])
+    except Exception as exc:
+        ov.set_status("自动发送失败，已停止本次发送；请人工确认。", "error")
+        ov.log(f"[自动发送失败] {type(exc).__name__}: {exc}")
+        return
+
+    ov.set_status("已自动发送推荐回复。", "success")
 
 
 def spawn_worker():
@@ -333,6 +400,7 @@ def drain():
         _, title, new, area = msg
         state["area"] = area
         chat = chat_of(title)
+        state["pending_send"] = None
         chat["rev"] += 1  # 这个会话有新消息了，它在跑的分析作废
         if title == ov.current_chat():  # 看的是别的会话就别把人家的候选划掉
             ov.invalidate_replies()
@@ -400,6 +468,7 @@ def tick():
                 chat_of(title)["result"] = r  # 先存着；正看着这个会话才立刻贴上去
                 if title == ov.current_chat():
                     ov.show(r)
+                    queue_auto_send(title, r, revision)
                 else:
                     ov.set_busy(False)
             else:

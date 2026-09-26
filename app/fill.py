@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""把选中的候选填进微信输入框：写剪贴板 → 点输入框 → Ctrl+V。绝不发回车、绝不点发送。"""
+"""把候选填进微信输入框；自动客服模式下也可以显式点击发送按钮。"""
 import ctypes
 import ctypes.wintypes as w
 import time
@@ -89,3 +89,43 @@ def fill(hwnd, area, text):
     u32.keybd_event(0x56, 0, 2, 0)
     u32.keybd_event(0x11, 0, 2, 0)
     # 到此为止。发不发、改不改，人来。
+
+
+
+def send(hwnd, area):
+    """点击微信输入区右下角的“发送”按钮。
+
+    area 与 fill() 相同，来自当前帧识别出的聊天面板坐标。
+    不依赖 Enter / Ctrl+Enter 设置，因此比键盘快捷键稳定。
+    """
+    from app.capture import unminimize
+
+    r = w.RECT()
+    if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:
+        u32.GetWindowRect(hwnd, ctypes.byref(r))
+
+    _, _, x1, _ = area[:4]
+    unminimize(hwnd)
+
+    fg = u32.GetForegroundWindow()
+    if fg != hwnd:
+        fg_tid = u32.GetWindowThreadProcessId(fg, None)
+        our_tid = k32.GetCurrentThreadId()
+        u32.AttachThreadInput(our_tid, fg_tid, True)
+        u32.SetForegroundWindow(hwnd)
+        u32.AttachThreadInput(our_tid, fg_tid, False)
+        time.sleep(0.12)
+
+    # “发送”按钮位于聊天面板右下角。横坐标用动态识别到的 x1，
+    # 纵坐标跟窗口底部走，避免输入框高度变化时点偏。
+    sx = r.left + x1 - 55
+    sy = r.bottom - 34
+
+    old = w.POINT()
+    u32.GetCursorPos(ctypes.byref(old))
+    u32.SetCursorPos(sx, sy)
+    time.sleep(0.06)
+    u32.mouse_event(0x2, 0, 0, 0, 0)
+    u32.mouse_event(0x4, 0, 0, 0, 0)
+    time.sleep(0.06)
+    u32.SetCursorPos(old.x, old.y)

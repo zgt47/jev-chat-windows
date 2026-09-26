@@ -38,6 +38,8 @@ _DEFAULT_JEV = "openrouter"
 _DEFAULT_DRAFT = "deepseek"
 _DEFAULT_ALWAYS_ON_TOP = True
 _DEFAULT_AUTO_ANALYZE = True
+_DEFAULT_AUTO_SEND = False
+_DEFAULT_AUTO_SEND_DELAY = 2
 _DEFAULT_TRANSPARENCY = 0
 _DEFAULT_RECORD_HISTORY = False
 _DEFAULT_HISTORY_LIMIT = 30
@@ -129,6 +131,18 @@ def always_on_top() -> bool:
 
 def auto_analyze() -> bool:
     return bool(_read("auto_analyze", _DEFAULT_AUTO_ANALYZE))
+
+
+def auto_send() -> bool:
+    return bool(_read("auto_send", _DEFAULT_AUTO_SEND))
+
+
+def auto_send_delay() -> int:
+    try:
+        n = int(_read("auto_send_delay", _DEFAULT_AUTO_SEND_DELAY))
+    except (TypeError, ValueError):
+        n = _DEFAULT_AUTO_SEND_DELAY
+    return max(1, min(10, n))
 
 
 def whitelist() -> list[str]:
@@ -298,6 +312,8 @@ def save(
     debug_view_on: bool | None = None,
     always_on_top_on: bool | None = None,
     auto_analyze_on: bool | None = None,
+    auto_send_on: bool | None = None,
+    auto_send_delay_n: int | None = None,
     whitelist_items: list[str] | None = None,
     transparency_n: int | None = None,
     record_history_on: bool | None = None,
@@ -334,6 +350,7 @@ def save(
 
     transparency_value = transparency() if transparency_n is None else max(0, min(40, int(transparency_n)))
     history_n = history_limit() if history_limit_n is None else max(10, min(100, int(history_limit_n)))
+    send_delay = auto_send_delay() if auto_send_delay_n is None else max(1, min(10, int(auto_send_delay_n)))
     wl = whitelist() if whitelist_items is None else [str(x).strip() for x in whitelist_items if str(x).strip()]
 
     data = {
@@ -352,6 +369,8 @@ def save(
         "debug_view": flag(debug_view_on, debug_view),
         "always_on_top": flag(always_on_top_on, always_on_top),
         "auto_analyze": flag(auto_analyze_on, auto_analyze),
+        "auto_send": flag(auto_send_on, auto_send),
+        "auto_send_delay": send_delay,
         "whitelist": wl,
         "overlay_transparency": transparency_value,
         "record_history": flag(record_history_on, record_history),
