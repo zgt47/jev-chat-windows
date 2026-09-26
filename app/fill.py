@@ -18,6 +18,37 @@ k32.GlobalFree.argtypes = [ctypes.c_void_p]
 u32.SetClipboardData.restype = ctypes.c_void_p
 u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
 
+try:
+    u32.GetDpiForWindow.argtypes = [ctypes.c_void_p]
+    u32.GetDpiForWindow.restype = ctypes.c_uint
+except AttributeError:
+    pass
+
+
+def _dpi_scale(hwnd) -> float:
+    """返回窗口 DPI 相对 96 DPI 的缩放倍数。
+
+    WGC 的聊天区域坐标跟窗口像素走，但“输入框内偏移 / 发送按钮边距”
+    是按微信界面的逻辑尺寸设计的，必须随 DPI 放大。
+    """
+    try:
+        dpi = int(u32.GetDpiForWindow(hwnd))
+        if dpi > 0:
+            return max(1.0, min(3.0, dpi / 96.0))
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    return 1.0
+
+
+def _window_rect(hwnd):
+    """取与 WGC 尽量一致的窗口扩展边界。"""
+    r = w.RECT()
+    if ctypes.windll.dwmapi.DwmGetWindowAttribute(
+        hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)
+    ) != 0:
+        u32.GetWindowRect(hwnd, ctypes.byref(r))
+    return r
+
 
 def set_clipboard(text):
     """写剪贴板。剪贴板可能被别的程序占着（剪贴板管理器、截图工具），重试几次。"""
@@ -51,11 +82,12 @@ def fill(hwnd, area, text):
     from app.capture import unminimize
 
     set_clipboard(text)
-    r = w.RECT()
-    if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:  # 扩展边界，跟 WGC 帧对齐
-        u32.GetWindowRect(hwnd, ctypes.byref(r))
+    r = _window_rect(hwnd)
+    scale = _dpi_scale(hwnd)
     x0, _, _, y1 = area
-    cx, cy = r.left + x0 + 60, r.top + y1 + 40  # 分隔线下 40px = 输入框文字区；工具栏和「发送」在输入区最底下，碰不到
+    # 60 / 40 是 100% DPI 下的逻辑偏移，高 DPI 必须同步放大。
+    cx = r.left + x0 + round(60 * scale)
+    cy = r.top + y1 + round(40 * scale)
     unminimize(hwnd)
 
     # SetForegroundWindow 有前台窗口保护，普通后台进程会被拒；AttachThreadInput 绕过
@@ -100,11 +132,10 @@ def send(hwnd, area):
     """
     from app.capture import unminimize
 
-    r = w.RECT()
-    if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:
-        u32.GetWindowRect(hwnd, ctypes.byref(r))
+    r = _window_rect(hwnd)
+    scale = _dpi_scale(hwnd)
 
-    _, _, x1, _ = area[:4]
+    _, _, x1, y1 = area[:4]
     unminimize(hwnd)
 
     fg = u32.GetForegroundWindow()
@@ -116,10 +147,17 @@ def send(hwnd, area):
         u32.AttachThreadInput(our_tid, fg_tid, False)
         time.sleep(0.12)
 
-    # “发送”按钮位于聊天面板右下角。横坐标用动态识别到的 x1，
-    # 纵坐标跟窗口底部走，避免输入框高度变化时点偏。
-    sx = r.left + x1 - 55
-    sy = r.bottom - 34
+    # “发送”按钮位于聊天面板右下角。
+    # x1 / y1 来自 WGC 的真实窗口像素；按钮自身的右/下边距属于 UI 逻辑尺寸，
+    # 所以 55 / 34 必须按窗口 DPI 缩放。3200×2000 + 150~200% 缩放时，
+    # 旧代码固定减 55/34 会点到按钮右下方，表现为“已经填入但没有发送”。
+    sx = r.left + x1 - round(55 * scale)
+    sy = r.bottom - round(34 * scale)
+
+    # 最后再夹进输入区右下角，避免极端主题 / 窗口尺寸下点出聊天面板。
+    input_top = r.top + y1
+    sx = max(r.left + 1, min(sx, r.right - 2))
+    sy = max(input_top + round(18 * scale), min(sy, r.bottom - 2))
 
     old = w.POINT()
     u32.GetCursorPos(ctypes.byref(old))
