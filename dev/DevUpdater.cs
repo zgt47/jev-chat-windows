@@ -11,7 +11,11 @@ namespace JevChatDevUpdater
 {
     internal sealed class UpdaterForm : Form
     {
-        private const string RepoZip = "https://github.com/zgt47/jev-chat-windows/archive/refs/heads/dev-external-source.zip";
+        private static readonly string[] RepoZips = new string[]
+        {
+            "https://codeload.github.com/zgt47/jev-chat-windows/zip/refs/heads/dev-external-source",
+            "https://github.com/zgt47/jev-chat-windows/archive/refs/heads/dev-external-source.zip"
+        };
 
         private readonly Label statusLabel;
         private readonly TextBox detailBox;
@@ -20,6 +24,32 @@ namespace JevChatDevUpdater
         private readonly Button closeButton;
         private readonly BackgroundWorker worker;
         private readonly string root;
+
+        private sealed class TimeoutWebClient : WebClient
+        {
+            public int TimeoutMs { get; set; }
+
+            public TimeoutWebClient(int timeoutMs)
+            {
+                TimeoutMs = timeoutMs;
+            }
+
+            protected override WebRequest GetWebRequest(Uri address)
+            {
+                WebRequest request = base.GetWebRequest(address);
+                request.Timeout = TimeoutMs;
+
+                HttpWebRequest http = request as HttpWebRequest;
+                if (http != null)
+                {
+                    http.ReadWriteTimeout = TimeoutMs;
+                    http.AutomaticDecompression =
+                        DecompressionMethods.GZip | DecompressionMethods.Deflate;
+                }
+
+                return request;
+            }
+        }
 
         public UpdaterForm()
         {
@@ -131,17 +161,68 @@ namespace JevChatDevUpdater
             {
                 Directory.CreateDirectory(temp);
 
-                Report("正在下载最新开发源码…");
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
-                using (WebClient client = new WebClient())
+
+                IWebProxy systemProxy = WebRequest.DefaultWebProxy;
+                string proxyText = "未检测到系统代理，使用直连";
+                if (systemProxy != null)
                 {
-                    client.Headers[HttpRequestHeader.UserAgent] = "JevChat-Dev-Updater";
-                    client.DownloadFile(RepoZip, zip);
+                    try
+                    {
+                        Uri probe = new Uri(RepoZips[0]);
+                        Uri via = systemProxy.GetProxy(probe);
+                        if (via != null && via != probe)
+                            proxyText = "检测到 Windows 系统代理，将自动使用";
+                    }
+                    catch { }
+                }
+                Report(proxyText);
+
+                Exception lastDownloadError = null;
+                bool downloaded = false;
+
+                for (int i = 0; i < RepoZips.Length; i++)
+                {
+                    string sourceName = i == 0 ? "GitHub codeload" : "GitHub 普通下载";
+                    Report("正在尝试：" + sourceName + "…");
+
+                    try
+                    {
+                        if (File.Exists(zip))
+                            File.Delete(zip);
+
+                        using (TimeoutWebClient client = new TimeoutWebClient(15000))
+                        {
+                            client.Proxy = systemProxy;
+                            if (client.Proxy != null)
+                                client.Proxy.Credentials = CredentialCache.DefaultCredentials;
+
+                            client.Headers[HttpRequestHeader.UserAgent] = "JevChat-Dev-Updater";
+                            client.DownloadFile(RepoZips[i], zip);
+                        }
+
+                        FileInfo zipInfo = new FileInfo(zip);
+                        if (!zipInfo.Exists || zipInfo.Length < 1024)
+                            throw new InvalidOperationException("下载结果为空或无效");
+
+                        downloaded = true;
+                        Report("下载完成：" + sourceName);
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastDownloadError = ex;
+                        Report(sourceName + " 超时或失败，自动切换下一条线路…");
+                    }
                 }
 
-                FileInfo zipInfo = new FileInfo(zip);
-                if (!zipInfo.Exists || zipInfo.Length < 1024)
-                    throw new InvalidOperationException("下载到的源码压缩包无效或为空");
+                if (!downloaded)
+                {
+                    throw new InvalidOperationException(
+                        "GitHub 下载线路都不可用。请稍后重试；如果你使用代理，请确认 Windows 系统代理已开启。\r\n" +
+                        "最后错误：" + (lastDownloadError == null ? "未知错误" : lastDownloadError.Message)
+                    );
+                }
 
                 Report("正在解压源码…");
                 Directory.CreateDirectory(extract);
