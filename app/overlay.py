@@ -787,6 +787,17 @@ class Overlay:
         self.profileStyleEdit.hide()
         box.addWidget(self.profileStyleEdit)
 
+        persona_label = _label("人格 Skill", 13)
+        box.addWidget(persona_label)
+        self.profilePersonaBox = ComboBox()
+        self.profilePersonaBox.setMinimumWidth(0)
+        self.profilePersonaBox.setAccessibleName("当前会话使用的人格 Skill")
+        persona_label.setBuddy(self.profilePersonaBox)
+        box.addWidget(self.profilePersonaBox)
+        box.addWidget(self._hint(
+            "可给不同会话指定不同人格；「跟随默认」会使用人格库里的默认人格，「不使用人格」则完全关闭人格规则。"
+        ))
+
         alias_label = _label("别名（可选，每行一个）", 13)
         box.addWidget(alias_label)
         self.profileAliasesEdit = PlainTextEdit()
@@ -1279,12 +1290,16 @@ class Overlay:
         )
 
     def _refresh_persona_summary(self):
-        data = persona_skill.load()
-        if not data["enabled"]:
-            self.personaSummary.setText("人格 Skill：未启用")
+        chat = self._shown or self._chat
+        persona_id = chat_profiles.get(chat).get("persona_id", persona_skill.DEFAULT_PERSONA) if chat else persona_skill.DEFAULT_PERSONA
+        data = persona_skill.effective(persona_id)
+        if not data:
+            label = "不使用人格" if persona_id == persona_skill.NO_PERSONA else "未启用"
+            self.personaSummary.setText(f"人格 Skill：{label}")
             return
+        default_mark = " · 默认" if data.get("id") == persona_skill.default_id() else ""
         self.personaSummary.setText(
-            f"{data.get('name', '人格 Skill')}：已启用 · "
+            f"{data.get('name', '人格 Skill')}：已启用{default_mark} · "
             f"口吻 {len(data['tone_rules'])} · 逻辑 {len(data['decision_rules'])}"
         )
 
@@ -1830,6 +1845,24 @@ class Overlay:
             self._empty_text()
             self.set_status("设置已就绪，等待新消息", "idle")
 
+    def _refresh_profile_persona_options(self, selected="__default__"):
+        skills = persona_skill.list_skills()
+        self._profilePersonaIds = [persona_skill.DEFAULT_PERSONA, persona_skill.NO_PERSONA] + [
+            x["id"] for x in skills
+        ]
+        labels = ["跟随默认人格", "不使用人格"] + [
+            x["name"] + ("" if x.get("enabled") else "（已停用）") for x in skills
+        ]
+        self.profilePersonaBox.blockSignals(True)
+        self.profilePersonaBox.clear()
+        self.profilePersonaBox.addItems(labels)
+        try:
+            index = self._profilePersonaIds.index(selected)
+        except ValueError:
+            index = 0
+        self.profilePersonaBox.setCurrentIndex(index)
+        self.profilePersonaBox.blockSignals(False)
+
     def _load_profile(self):
         chat = self._shown or self._chat
         self.profileChatLabel.setText(chat or "尚未识别到会话")
@@ -1866,6 +1899,7 @@ class Overlay:
         self.profileStyleDescription.setText(
             _STYLE_DESCRIPTIONS.get(_STYLE_PRESETS[preset_index][1], "")
         )
+        self._refresh_profile_persona_options(profile.get("persona_id", persona_skill.DEFAULT_PERSONA))
         self.profileAliasesEdit.setPlainText("\n".join(profile.get("aliases", [])))
         self.profileNotesEdit.setPlainText(profile.get("notes", ""))
 
@@ -1902,11 +1936,19 @@ class Overlay:
                 self.profileStyleEdit.setFocus()
                 return
 
+        persona_index = self.profilePersonaBox.currentIndex()
+        persona_id = (
+            self._profilePersonaIds[persona_index]
+            if 0 <= persona_index < len(getattr(self, "_profilePersonaIds", []))
+            else persona_skill.DEFAULT_PERSONA
+        )
+
         try:
             chat_profiles.save(
                 chat, relationship, style, chat_type,
                 self.profileNotesEdit.toPlainText().strip(),
                 self.profileAliasesEdit.toPlainText().splitlines(),
+                persona_id,
             )
         except Exception:
             self._profile_feedback("保存失败，请检查程序目录是否可写。", error=True)
@@ -2553,6 +2595,7 @@ class Overlay:
         self._follow_text()
         self._render_targets()
         self._refresh_profile_summary()
+        self._refresh_persona_summary()
         self.show_cached(self.result_of(title) if self.result_of else None)
 
     def set_targets(self, chat, senders, current):
@@ -2640,7 +2683,7 @@ class Overlay:
         if result.get("knowledge_count"):
             context_bits.append(f"知识库 {result['knowledge_count']} 条")
         if result.get("persona_skill"):
-            context_bits.append("个人 Skill")
+            context_bits.append(result.get("persona_name") or "人格 Skill")
         self.insightTitle.setText("对话参考" + (" · " + " · ".join(context_bits) if context_bits else ""))
         answers = result.get("answers") or {}
 

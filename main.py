@@ -275,7 +275,9 @@ def analyze_bg(msgs, title, revision, reply_to=None):
             relationship += "\n知识库背景（只把它当事实，不要编造）：\n" + "\n".join(
                 f"- {n['title'] or '笔记'}：{n['content']}" for n in matched_notes
             )
-        persona = persona_skill.prompt_text()
+        persona_id = profile.get("persona_id", persona_skill.DEFAULT_PERSONA)
+        persona_data = persona_skill.effective(persona_id)
+        persona = persona_skill.prompt_text(persona_id)
         result = analyze(msgs, relationship, context=settings.context(),
                          model=settings.draft_model() or None,
                          provider=settings.draft_provider(),
@@ -288,6 +290,7 @@ def analyze_bg(msgs, title, revision, reply_to=None):
                          jev_base_url=settings.jev_base_url() or None)
         result["knowledge_count"] = len(matched_notes)
         result["persona_skill"] = bool(persona)
+        result["persona_name"] = persona_data.get("name") if persona_data else ""
         results.put(("ok", result, title, revision))
     except Exception as e:
         results.put(("err", f"分析失败: {e}", title, revision))

@@ -75,6 +75,7 @@ def get(chat: str) -> dict:
         notes = str(item.get("notes") or "").strip()
         aliases = [str(x).strip() for x in (item.get("aliases") or []) if str(x).strip()]
         chat_type = str(item.get("chat_type") or _DEFAULT_CHAT_TYPE).strip()
+        persona_id = str(item.get("persona_id") or "__default__").strip()
         if chat_type not in _CHAT_TYPES:
             chat_type = _DEFAULT_CHAT_TYPE
         return {
@@ -83,6 +84,7 @@ def get(chat: str) -> dict:
             "notes": notes,
             "aliases": aliases,
             "chat_type": chat_type,
+            "persona_id": persona_id,
             "saved": True,
             "legacy": False,
         }
@@ -94,6 +96,7 @@ def get(chat: str) -> dict:
         "notes": "",
         "aliases": [],
         "chat_type": _DEFAULT_CHAT_TYPE,
+        "persona_id": "__default__",
         "saved": False,
         "legacy": legacy,
     }
@@ -113,13 +116,14 @@ def chat_type(chat: str) -> str:
 
 def save(chat: str, relationship: str, style: str = _DEFAULT_STYLE,
          chat_type: str = _DEFAULT_CHAT_TYPE, notes: str = "",
-         aliases: list[str] | None = None) -> None:
+         aliases: list[str] | None = None, persona_id: str = "__default__") -> None:
     chat = str(chat or "").strip()
     relationship = str(relationship or "").strip()
     style = str(style or _DEFAULT_STYLE).strip()
     notes = str(notes or "").strip()
     aliases = [str(x).strip() for x in (aliases or []) if str(x).strip()]
     chat_type = str(chat_type or _DEFAULT_CHAT_TYPE).strip()
+    persona_id = str(persona_id or "__default__").strip()
     if not chat:
         raise ValueError("尚未识别到会话")
     if not relationship:
@@ -134,6 +138,7 @@ def save(chat: str, relationship: str, style: str = _DEFAULT_STYLE,
         "notes": notes,
         "aliases": aliases,
         "chat_type": chat_type,
+        "persona_id": persona_id,
     }
 
     tmp = _PATH + ".tmp"
