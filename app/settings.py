@@ -177,6 +177,25 @@ def window_state() -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def bubble_state() -> dict:
+    value = _read("bubble_state", {})
+    return value if isinstance(value, dict) else {}
+
+
+def save_bubble_state(x: int, y: int) -> None:
+    """悬浮球位置和主窗口几何分开保存。"""
+    try:
+        with open(_CONFIG, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data["bubble_state"] = {"x": int(x), "y": int(y)}
+    with open(_CONFIG, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
 def save_window_state(x: int, y: int, w: int, h: int) -> None:
     """只更新窗口几何，不碰密钥和其它设置。"""
     try:
@@ -338,6 +357,7 @@ def save(
         "record_history": flag(record_history_on, record_history),
         "history_limit": history_n,
         "window_state": window_state(),
+        "bubble_state": bubble_state(),
     }
 
     with open(_CONFIG, "w", encoding="utf-8") as f:
