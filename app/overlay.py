@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from PySide6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QMenu, QPushButton, QSlider, QSizeGrip, QSizePolicy,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QMenu, QPushButton, QSlider, QSizeGrip, QSizePolicy,
     QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
@@ -568,10 +568,10 @@ class Overlay:
 
         persona_row = QHBoxLayout()
         persona_row.setSpacing(8)
-        self.personaSummary = _label("个人客服：未启用", 12, _MUTED)
+        self.personaSummary = _label("人格 Skill：未启用", 12, _MUTED)
         persona_row.addWidget(self.personaSummary, 1)
-        self.personaButton = PushButton("个人客服 Skill")
-        self.personaButton.setToolTip("从你的历史回复中蒸馏口吻和客服处理逻辑")
+        self.personaButton = PushButton("人格 Skill")
+        self.personaButton.setToolTip("蒸馏你自己的习惯，或导入虚拟人格用于测试")
         self.personaButton.clicked.connect(self.open_persona)
         persona_row.addWidget(self.personaButton)
         body.addLayout(persona_row)
@@ -1004,7 +1004,7 @@ class Overlay:
         heading = QHBoxLayout()
         heading.setSpacing(8)
         heading.addWidget(_tool(FIF.RETURN, "返回回复建议", self._back_home))
-        heading.addWidget(_label("个人客服 Skill", 23, "#24382d", True), 1)
+        heading.addWidget(_label("人格 Skill", 23, "#24382d", True), 1)
         self.personaSaveButton = PrimaryPushButton("保存 Skill")
         self.personaSaveButton.clicked.connect(self._save_persona)
         heading.addWidget(self.personaSaveButton)
@@ -1034,7 +1034,7 @@ class Overlay:
         self._pageLayouts.append(body)
 
         body.addWidget(_label(
-            "从你的真实回复中提取口吻和处理逻辑。蒸馏结果完全可编辑；只有保存并启用后才参与回复。",
+            "可以从你的真实回复中蒸馏，也可以导入虚拟人格 JSON。内容完全可编辑；只有保存并启用后才参与回复。",
             13, _MUTED
         ))
 
@@ -1043,8 +1043,13 @@ class Overlay:
         box.setContentsMargins(16, 16, 16, 18)
         box.setSpacing(10)
 
+        box.addWidget(_label("Skill 名称", 13))
+        self.personaNameEdit = LineEdit()
+        self.personaNameEdit.setPlaceholderText("例如：我的客服 / 二手车销冠 / 挑剔买家")
+        box.addWidget(self.personaNameEdit)
+
         enable_row = QHBoxLayout()
-        enable_row.addWidget(_label("启用个人客服 Skill", 13), 1)
+        enable_row.addWidget(_label("启用人格 Skill", 13), 1)
         self.personaEnabledSwitch = SwitchButton()
         self.personaEnabledSwitch.setOnText("开")
         self.personaEnabledSwitch.setOffText("关")
@@ -1055,6 +1060,10 @@ class Overlay:
         box.addWidget(self.personaHistoryState)
 
         action_row = QHBoxLayout()
+        self.personaImportButton = PushButton("导入 Skill")
+        self.personaImportButton.setToolTip("导入 jev-persona-skill/v1 JSON；先预览，保存后才生效")
+        self.personaImportButton.clicked.connect(self._persona_import_clicked)
+        action_row.addWidget(self.personaImportButton)
         self.personaDistillButton = PushButton("从本地历史重新蒸馏")
         self.personaDistillButton.clicked.connect(self._persona_distill_clicked)
         action_row.addWidget(self.personaDistillButton)
@@ -1137,6 +1146,7 @@ class Overlay:
 
     def _load_persona(self):
         data = persona_skill.load()
+        self.personaNameEdit.setText(data.get("name") or "未命名人格")
         self.personaEnabledSwitch.setChecked(data["enabled"])
         self.personaSummaryEdit.setPlainText(data["summary"])
         self.personaToneEdit.setPlainText("\n".join(data["tone_rules"]))
@@ -1157,6 +1167,9 @@ class Overlay:
     def _save_persona(self):
         old = persona_skill.load()
         data = {
+            "schema": "jev-persona-skill/v1",
+            "name": self.personaNameEdit.text().strip() or "未命名人格",
+            "role": getattr(self, "_personaPendingRole", old.get("role", "custom")),
             "enabled": self.personaEnabledSwitch.isChecked(),
             "summary": self.personaSummaryEdit.toPlainText().strip(),
             "tone_rules": self._persona_lines(self.personaToneEdit.toPlainText()),
@@ -1179,6 +1192,41 @@ class Overlay:
         self._load_persona()
         self._refresh_persona_summary()
         self._persona_feedback("个人客服 Skill 已保存，下一次生成回复开始生效。")
+
+    def _apply_persona_to_editor(self, data):
+        self.personaNameEdit.setText(data.get("name") or "未命名人格")
+        self.personaEnabledSwitch.setChecked(bool(data.get("enabled", True)))
+        self.personaSummaryEdit.setPlainText(data.get("summary", ""))
+        self.personaToneEdit.setPlainText("\n".join(data.get("tone_rules", [])))
+        self.personaDecisionEdit.setPlainText("\n".join(data.get("decision_rules", [])))
+        self.personaCommonEdit.setPlainText("\n".join(data.get("common_phrases", [])))
+        self.personaForbiddenEdit.setPlainText("\n".join(data.get("forbidden_phrases", [])))
+        self.personaExamplesEdit.setPlainText("\n".join(data.get("examples", [])))
+        self._personaPendingStats = data.get("source_stats") or {}
+        self._personaPendingRole = data.get("role") or "custom"
+
+    def _persona_import_clicked(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self.win,
+            "导入 Jev 人格 Skill",
+            "",
+            "Jev Skill (*.json);;JSON 文件 (*.json)",
+        )
+        if not path:
+            return
+        try:
+            data = persona_skill.import_file(path)
+        except Exception as exc:
+            self._persona_feedback("导入失败：" + str(exc), error=True)
+            return
+
+        self._apply_persona_to_editor(data)
+        self.personaHistoryState.setText(
+            f"已导入：{data.get('name', '未命名人格')}\n状态：尚未保存"
+        )
+        self._persona_feedback(
+            "Skill 已导入到编辑器，但还没有覆盖当前人格。检查内容后点右上角“保存 Skill”才生效。"
+        )
 
     def _persona_distill_clicked(self):
         corpus, stats = chat_history.training_corpus()
@@ -1217,14 +1265,9 @@ class Overlay:
             self._persona_feedback("蒸馏失败：" + reason[:220], error=True)
             return
 
-        self.personaEnabledSwitch.setChecked(True)
-        self.personaSummaryEdit.setPlainText(data.get("summary", ""))
-        self.personaToneEdit.setPlainText("\n".join(data.get("tone_rules", [])))
-        self.personaDecisionEdit.setPlainText("\n".join(data.get("decision_rules", [])))
-        self.personaCommonEdit.setPlainText("\n".join(data.get("common_phrases", [])))
-        self.personaForbiddenEdit.setPlainText("\n".join(data.get("forbidden_phrases", [])))
-        self.personaExamplesEdit.setPlainText("\n".join(data.get("examples", [])))
-        self._personaPendingStats = data.get("source_stats") or {}
+        data["name"] = "我的蒸馏人格"
+        data["role"] = "personal_customer_service"
+        self._apply_persona_to_editor(data)
 
         stats = self._personaPendingStats
         self.personaHistoryState.setText(
@@ -1238,10 +1281,11 @@ class Overlay:
     def _refresh_persona_summary(self):
         data = persona_skill.load()
         if not data["enabled"]:
-            self.personaSummary.setText("个人客服：未启用")
+            self.personaSummary.setText("人格 Skill：未启用")
             return
         self.personaSummary.setText(
-            f"个人客服：已启用 · 口吻 {len(data['tone_rules'])} · 逻辑 {len(data['decision_rules'])}"
+            f"{data.get('name', '人格 Skill')}：已启用 · "
+            f"口吻 {len(data['tone_rules'])} · 逻辑 {len(data['decision_rules'])}"
         )
 
     def open_persona(self):

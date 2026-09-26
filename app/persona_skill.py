@@ -17,10 +17,14 @@ _ROOT = (
     else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 _PATH = os.path.join(_ROOT, "persona_skill.json")
+_SCHEMA = "jev-persona-skill/v1"
 
 
 def _empty() -> dict:
     return {
+        "schema": _SCHEMA,
+        "name": "我的人格",
+        "role": "personal_customer_service",
         "enabled": False,
         "summary": "",
         "tone_rules": [],
@@ -51,6 +55,12 @@ def _clean_list(value, limit: int) -> list[str]:
 def normalize(data: dict | None) -> dict:
     src = data if isinstance(data, dict) else {}
     out = _empty()
+    schema = str(src.get("schema") or _SCHEMA).strip()
+    if schema != _SCHEMA:
+        raise ValueError(f"不支持的 Skill 格式：{schema}")
+    out["schema"] = _SCHEMA
+    out["name"] = str(src.get("name") or "未命名人格").strip()[:80]
+    out["role"] = str(src.get("role") or "custom").strip()[:80]
     out["enabled"] = bool(src.get("enabled", False))
     out["summary"] = str(src.get("summary") or "").strip()[:1000]
     out["tone_rules"] = _clean_list(src.get("tone_rules"), 20)
@@ -72,6 +82,30 @@ def load() -> dict:
         return _empty()
 
 
+def import_file(path: str) -> dict:
+    """Jev Skill 导入接口：读取并校验 JSON，但不自动写入当前 Skill。"""
+    path = os.path.abspath(str(path or "").strip())
+    if not path:
+        raise ValueError("没有选择 Skill 文件")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            raw = json.load(f)
+    except UnicodeDecodeError as exc:
+        raise ValueError("Skill 文件不是 UTF-8 编码") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Skill JSON 格式错误：第 {exc.lineno} 行") from exc
+    except OSError as exc:
+        raise ValueError("无法读取 Skill 文件：" + str(exc)) from exc
+
+    data = normalize(raw)
+    if not any(data[k] for k in (
+        "summary", "tone_rules", "decision_rules",
+        "common_phrases", "forbidden_phrases", "examples",
+    )):
+        raise ValueError("Skill 内容为空")
+    return data
+
+
 def save(data: dict) -> dict:
     current = load()
     merged = {**current, **(data or {})}
@@ -91,8 +125,10 @@ def prompt_text() -> str:
         return ""
 
     parts = [
-        "【个人客服 Skill】",
-        "这是用户本人维护的高优先级客服习惯。模仿其口吻和处理逻辑，但绝不能据此编造价格、库存、承诺、订单状态或其它事实。",
+        f"【人格 Skill：{data['name']}】",
+        f"角色：{data['role']}",
+        "这是当前启用的人格规则。按这个人格的口吻和处理逻辑行动，"
+        "但绝不能据此编造价格、库存、承诺、订单状态、车辆事实或其它未经确认的信息。",
     ]
     if data["summary"]:
         parts.append("总体画像：" + data["summary"])
