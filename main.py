@@ -46,8 +46,19 @@ def init_single_instance():
     kernel32 = ctypes.windll.kernel32
     user32 = ctypes.windll.user32
 
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p]
     kernel32.CreateEventW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
     kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.SetEvent.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+
+    user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+    user32.FindWindowW.restype = ctypes.c_void_p
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.BringWindowToTop.argtypes = [ctypes.c_void_p]
+    user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
 
     event_handle = kernel32.CreateEventW(None, False, False, _SINGLE_EVENT_NAME)
     kernel32.SetLastError(0)
@@ -61,9 +72,10 @@ def init_single_instance():
         # 用户刚刚主动双击了第二次启动，借这个前台资格把旧窗口提起来。
         hwnd = user32.FindWindowW(None, "JevChat-Windows")
         if hwnd:
-            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            user32.BringWindowToTop(hwnd)
-            user32.SetForegroundWindow(hwnd)
+            hwnd_ptr = ctypes.c_void_p(hwnd)
+            user32.ShowWindow(hwnd_ptr, 9)  # SW_RESTORE
+            user32.BringWindowToTop(hwnd_ptr)
+            user32.SetForegroundWindow(hwnd_ptr)
 
         if mutex_handle:
             kernel32.CloseHandle(ctypes.c_void_p(mutex_handle))
