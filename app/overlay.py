@@ -1649,7 +1649,7 @@ class Overlay:
         if not self._collapsed:
             return
         center = self.bubble.frameGeometry().center()
-        screen = self._screen_for_point(center)
+        screen = self.bubble.screen() or self._screen_for_point(center)
         target = self._bubble_snap_pos(self.bubble.pos(), screen)
         if animated and target != self.bubble.pos():
             if self._bubbleAnimation is not None:
@@ -1685,7 +1685,7 @@ class Overlay:
             if pos.x() + self.bubble.width() >= area.right():
                 return QPoint(
                     area.right() - half + 1,
-                    max(area.top() + 6, min(pos.y(), area.bottom() - self.win.height() - 5)),
+                    max(area.top() + 6, min(pos.y(), area.bottom() - self.bubble.height() - 5)),
                 )
 
             return self._clamp_to_geometry(pos, self.bubble.size(), area, margin=4)
@@ -1794,7 +1794,7 @@ class Overlay:
         bubble_pos = self.bubble.pos()
         bubble_size = self.bubble.size()
         bubble_center = self.bubble.frameGeometry().center()
-        screen = self._screen_for_point(bubble_center)
+        screen = self.bubble.screen() or self._screen_for_point(bubble_center)
 
         target_size = self._expandedSize or self.win.size()
         target_pos = self._expanded_pos_from_bubble(
