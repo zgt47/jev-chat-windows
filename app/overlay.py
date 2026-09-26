@@ -9,8 +9,8 @@ from types import SimpleNamespace
 from PySide6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QMenu, QPushButton, QSlider, QSizeGrip, QSizePolicy,
-    QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QMenu, QPushButton, QScrollArea as NativeScrollArea,
+    QSlider, QSizeGrip, QSizePolicy, QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
     BodyLabel, CardWidget, CheckBox, ComboBox, EditableComboBox, FluentIcon as FIF,
@@ -386,10 +386,6 @@ class Overlay:
         title.setContentsMargins(18, 12, 10, 10)
         title.setSpacing(8)
         self.titleLayout = title
-        self.nameLabel = _label("Jev", 20, "#233c2f", True)
-        self.nameLabel.setFixedWidth(40)
-        self.nameLabel.setAttribute(Qt.WA_TransparentForMouseEvents)
-        title.addWidget(self.nameLabel)
         title.addStretch(1)
         self.captureSwitch = SwitchButton(header)
         self.captureSwitch.setOnText("采集中")
@@ -453,15 +449,7 @@ class Overlay:
         screen = self.app.primaryScreen().availableGeometry()
         self._normalMinHeight = min(360, screen.height() - 32)
         self.win.setMinimumHeight(self._normalMinHeight)
-        saved = settings.window_state()
-        width = min(640, max(320, int(saved.get("w", min(440, screen.width() - 32)))))
-        height = min(screen.height() - 48, max(self._normalMinHeight, int(saved.get("h", min(820, screen.height() - 48)))))
-        self.win.resize(width, height)
-        x = int(saved.get("x", screen.right() - width - 20))
-        y = int(saved.get("y", screen.top() + 24))
-        x = max(screen.left(), min(x, screen.right() - width + 1))
-        y = max(screen.top(), min(y, screen.bottom() - height + 1))
-        self.win.move(x, y)
+        self.win.setGeometry(self._restored_main_geometry())
         self._apply_transparency()
         self._setup_tray()
         self._relayout(self.win.width(), self.win.height())  # resizeEvent 补不到构造时这一次
@@ -469,16 +457,27 @@ class Overlay:
                         "idle" if settings.has_key() else "warning")
         self.win.show()
 
-    def _scroll_page(self):
-        scroll = ScrollArea()
+    def _scroll_page(self, fast=False):
+        # 首页用 Qt 原生滚动，不叠加 Fluent 的平滑滚动动画。
+        # 复杂卡片较多时，原生逐帧滚动明显更稳，也不会出现滚轮惯性和重绘互相追赶。
+        scroll = NativeScrollArea() if fast else ScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        scroll.viewport().setAutoFillBackground(False)
+        scroll.setStyleSheet(
+            "QScrollArea { background:#f5f7f6; border:none; }"
+            "QScrollArea > QWidget > QWidget { background:#f5f7f6; }"
+        )
+        scroll.viewport().setAutoFillBackground(True)
+        scroll.viewport().setAttribute(Qt.WA_OpaquePaintEvent, True)
+        scroll.viewport().setAttribute(Qt.WA_StaticContents, True)
+        if fast:
+            scroll.verticalScrollBar().setSingleStep(36)
+
         content = QWidget()
         content.setObjectName("pageContent")
-        content.setStyleSheet("QWidget#pageContent { background: transparent; }")
+        content.setStyleSheet("QWidget#pageContent { background:#f5f7f6; }")
+        content.setAttribute(Qt.WA_OpaquePaintEvent, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 8, 20, 12)
         layout.setSpacing(14)
@@ -510,7 +509,7 @@ class Overlay:
             card.set_compact(compact)
 
     def _build_home(self):
-        self.home, body = self._scroll_page()
+        self.home, body = self._scroll_page(fast=True)
         heading = QHBoxLayout()
         heading.addWidget(_label("回复建议", 23, "#24382d", True), 1)
         self.updated = _label("", 11, _MUTED)
@@ -2411,6 +2410,32 @@ class Overlay:
             )
         )
 
+    def _restored_main_geometry(self):
+        """完整主界面只认自己的上次位置/尺寸，不跟随悬浮球。
+
+        多显示器下直接按保存坐标恢复；原显示器被拔掉时才移动到当前最近的显示器。
+        """
+        saved = settings.window_state()
+        primary = self.app.primaryScreen().availableGeometry()
+
+        raw_w = int(saved.get("w", min(440, primary.width() - 32)))
+        raw_h = int(saved.get("h", min(820, primary.height() - 48)))
+        raw_x = int(saved.get("x", primary.right() - raw_w - 20))
+        raw_y = int(saved.get("y", primary.top() + 24))
+
+        probe = QPoint(raw_x + max(1, raw_w // 2), raw_y + max(1, raw_h // 2))
+        screen = self._screen_for_point(probe)
+        area = screen.availableGeometry()
+
+        width = min(640, max(320, min(raw_w, area.width() - 16)))
+        height = min(
+            max(self._normalMinHeight, area.height() - 16),
+            max(self._normalMinHeight, min(raw_h, area.height() - 16)),
+        )
+        size = QSize(width, height)
+        pos = self._clamp_to_geometry(QPoint(raw_x, raw_y), size, area, margin=8)
+        return QRect(pos, size)
+
     def _save_window_state(self):
         """主窗口和悬浮球位置分开保存。"""
         size = self.win.size()
@@ -2440,21 +2465,13 @@ class Overlay:
         if not self._collapsed:
             return
 
-        bubble_pos = self.bubble.pos()
-        bubble_size = self.bubble.size()
-        bubble_center = self.bubble.frameGeometry().center()
-        screen = self.bubble.screen() or self._screen_for_point(bubble_center)
-
-        target_size = self._expandedSize or self.win.size()
-        target_pos = self._expanded_pos_from_bubble(
-            bubble_pos, bubble_size, target_size, screen
-        )
+        target_geometry = self._restored_main_geometry()
 
         self._collapsed = False
         self.bubble.hide()
 
         target_opacity = 1.0 - settings.transparency() / 100.0
-        self.win.setGeometry(QRect(target_pos, target_size))
+        self.win.setGeometry(target_geometry)
         self.win.setWindowOpacity(max(0.62, target_opacity - 0.22))
         self.win.showNormal()
         self.win.raise_()
@@ -2528,6 +2545,8 @@ class Overlay:
     def _quit_app(self):
         self._force_quit = True
         self._save_window_state()
+        if self._collapsed:
+            self._save_bubble_state()
         if hasattr(self, "bubble"):
             self.bubble.hide()
         if hasattr(self, "tray"):
