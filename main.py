@@ -16,7 +16,7 @@ from collections import deque
 from app import chat_history, chat_profiles, settings, update, worker
 from app.services import analysis_service, auto_send_policy
 from app.capture import find_wechat_hwnd
-from app.fill import fill, send
+from app.fill import diagnostics as fill_diagnostics, fill, send
 from app.overlay import Overlay
 from app.version import VERSION
 
@@ -191,13 +191,24 @@ def perform_auto_send(token):
 
     try:
         fill_reply(text)
-        # 给微信一次重绘机会，确保粘贴内容已经进入输入框。
-        import time
-        time.sleep(0.15)
+    except Exception as exc:
+        reason = str(exc) or type(exc).__name__
+        ov.set_status(f"自动发送失败：填入失败 · {reason}", "error")
+        ov.log(f"[自动发送-填入失败] {type(exc).__name__}: {exc}")
+        ov.log("[输入诊断] " + fill_diagnostics(state["hwnd"], state["area"]))
+        return
+
+    # 给微信一次重绘机会，确保粘贴内容已经进入输入框。
+    import time
+    time.sleep(0.15)
+
+    try:
         send(state["hwnd"], state["area"])
     except Exception as exc:
-        ov.set_status("自动发送失败，已停止本次发送；请人工确认。", "error")
-        ov.log(f"[自动发送失败] {type(exc).__name__}: {exc}")
+        reason = str(exc) or type(exc).__name__
+        ov.set_status(f"自动发送失败：发送失败 · {reason}", "error")
+        ov.log(f"[自动发送-发送失败] {type(exc).__name__}: {exc}")
+        ov.log("[输入诊断] " + fill_diagnostics(state["hwnd"], state["area"]))
         return
 
     ov.set_status("已自动发送推荐回复。", "success")
