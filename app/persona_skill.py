@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""个人客服 Skill：从本地聊天样本蒸馏，并作为可编辑规则参与起草和 Jev 排序。"""
+"""Jev 人格 Skill：多人格库、导入、蒸馏和运行时解析。"""
 from __future__ import annotations
 
 import json
 import os
 import re
 import sys
+import uuid
 from datetime import datetime
 
 from app import settings
@@ -16,15 +17,22 @@ _ROOT = (
     if getattr(sys, "frozen", False)
     else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-_PATH = os.path.join(_ROOT, "persona_skill.json")
-_SCHEMA = "jev-persona-skill/v1"
+_LIBRARY_PATH = os.path.join(_ROOT, "persona_skills.json")
+_LEGACY_PATH = os.path.join(_ROOT, "persona_skill.json")
+
+_SKILL_SCHEMA = "jev-persona-skill/v1"
+_LIBRARY_SCHEMA = "jev-persona-library/v1"
+
+DEFAULT_PERSONA = "__default__"
+NO_PERSONA = "__none__"
 
 
-def _empty() -> dict:
+def _blank_skill() -> dict:
     return {
-        "schema": _SCHEMA,
-        "name": "我的人格",
-        "role": "personal_customer_service",
+        "schema": _SKILL_SCHEMA,
+        "id": "",
+        "name": "未命名人格",
+        "role": "custom",
         "enabled": False,
         "summary": "",
         "tone_rules": [],
@@ -54,11 +62,12 @@ def _clean_list(value, limit: int) -> list[str]:
 
 def normalize(data: dict | None) -> dict:
     src = data if isinstance(data, dict) else {}
-    out = _empty()
-    schema = str(src.get("schema") or _SCHEMA).strip()
-    if schema != _SCHEMA:
+    schema = str(src.get("schema") or _SKILL_SCHEMA).strip()
+    if schema != _SKILL_SCHEMA:
         raise ValueError(f"不支持的 Skill 格式：{schema}")
-    out["schema"] = _SCHEMA
+
+    out = _blank_skill()
+    out["id"] = str(src.get("id") or "").strip()[:64]
     out["name"] = str(src.get("name") or "未命名人格").strip()[:80]
     out["role"] = str(src.get("role") or "custom").strip()[:80]
     out["enabled"] = bool(src.get("enabled", False))
@@ -74,16 +83,152 @@ def normalize(data: dict | None) -> dict:
     return out
 
 
-def load() -> dict:
+def _empty_library() -> dict:
+    return {
+        "schema": _LIBRARY_SCHEMA,
+        "default_id": "",
+        "skills": [],
+    }
+
+
+def _write_library(data: dict) -> None:
+    tmp = _LIBRARY_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _LIBRARY_PATH)
+
+
+def _load_library() -> dict:
     try:
-        with open(_PATH, encoding="utf-8") as f:
-            return normalize(json.load(f))
-    except (OSError, ValueError):
-        return _empty()
+        with open(_LIBRARY_PATH, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict) or raw.get("schema") != _LIBRARY_SCHEMA:
+            raise ValueError("人格库格式无效")
+        skills = []
+        ids = set()
+        for item in raw.get("skills") or []:
+            try:
+                skill = normalize(item)
+            except ValueError:
+                continue
+            if not skill["id"] or skill["id"] in ids:
+                skill["id"] = uuid.uuid4().hex
+            ids.add(skill["id"])
+            skills.append(skill)
+        default_id = str(raw.get("default_id") or "")
+        if default_id not in ids:
+            default_id = skills[0]["id"] if skills else ""
+        return {
+            "schema": _LIBRARY_SCHEMA,
+            "default_id": default_id,
+            "skills": skills,
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+
+    # 自动迁移旧版单人格文件；保留原文件，不删除。
+    try:
+        with open(_LEGACY_PATH, encoding="utf-8") as f:
+            old = normalize(json.load(f))
+        if any(old[k] for k in (
+            "summary", "tone_rules", "decision_rules",
+            "common_phrases", "forbidden_phrases", "examples",
+        )):
+            old["id"] = old["id"] or uuid.uuid4().hex
+            lib = {
+                "schema": _LIBRARY_SCHEMA,
+                "default_id": old["id"],
+                "skills": [old],
+            }
+            _write_library(lib)
+            return lib
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+
+    return _empty_library()
+
+
+def list_skills() -> list[dict]:
+    return [dict(x) for x in _load_library()["skills"]]
+
+
+def default_id() -> str:
+    return _load_library()["default_id"]
+
+
+def load(skill_id: str | None = None) -> dict:
+    lib = _load_library()
+    target = lib["default_id"] if skill_id in (None, "", DEFAULT_PERSONA) else str(skill_id)
+    for skill in lib["skills"]:
+        if skill["id"] == target:
+            return dict(skill)
+    return _blank_skill()
+
+
+def save(data: dict, skill_id: str | None = None, make_default: bool | None = None) -> dict:
+    lib = _load_library()
+    incoming = dict(data or {})
+    current_id = str(skill_id or incoming.get("id") or "").strip()
+    current = load(current_id) if current_id else _blank_skill()
+
+    merged = {**current, **incoming}
+    normalized = normalize(merged)
+    normalized["id"] = current_id or uuid.uuid4().hex
+    normalized["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    found = False
+    for i, item in enumerate(lib["skills"]):
+        if item["id"] == normalized["id"]:
+            lib["skills"][i] = normalized
+            found = True
+            break
+    if not found:
+        lib["skills"].append(normalized)
+
+    if make_default is True or not lib["default_id"]:
+        lib["default_id"] = normalized["id"]
+    elif make_default is False and lib["default_id"] == normalized["id"]:
+        # 显式取消默认时，优先选其它人格；没有其它就仍保留当前。
+        other = next((x["id"] for x in lib["skills"] if x["id"] != normalized["id"]), "")
+        if other:
+            lib["default_id"] = other
+
+    _write_library(lib)
+    return dict(normalized)
+
+
+def delete(skill_id: str) -> None:
+    skill_id = str(skill_id or "").strip()
+    if not skill_id:
+        return
+    lib = _load_library()
+    lib["skills"] = [x for x in lib["skills"] if x["id"] != skill_id]
+    if lib["default_id"] == skill_id:
+        lib["default_id"] = lib["skills"][0]["id"] if lib["skills"] else ""
+    _write_library(lib)
+
+
+def set_default(skill_id: str) -> None:
+    skill_id = str(skill_id or "").strip()
+    lib = _load_library()
+    if skill_id not in {x["id"] for x in lib["skills"]}:
+        raise ValueError("这个人格已经不存在")
+    lib["default_id"] = skill_id
+    _write_library(lib)
+
+
+def effective(persona_id: str | None = None) -> dict | None:
+    """解析会话人格：跟随默认 / 禁用 / 指定人格。"""
+    if persona_id == NO_PERSONA:
+        return None
+    data = load(persona_id)
+    if not data.get("id") or not data.get("enabled"):
+        return None
+    return data
 
 
 def import_file(path: str) -> dict:
-    """Jev Skill 导入接口：读取并校验 JSON，但不自动写入当前 Skill。"""
+    """Jev Skill 导入接口：读取并校验 JSON，但不自动保存。"""
     path = os.path.abspath(str(path or "").strip())
     if not path:
         raise ValueError("没有选择 Skill 文件")
@@ -98,6 +243,7 @@ def import_file(path: str) -> dict:
         raise ValueError("无法读取 Skill 文件：" + str(exc)) from exc
 
     data = normalize(raw)
+    data["id"] = ""  # 导入默认作为一个新人格，避免覆盖已有同 ID 人格。
     if not any(data[k] for k in (
         "summary", "tone_rules", "decision_rules",
         "common_phrases", "forbidden_phrases", "examples",
@@ -106,28 +252,15 @@ def import_file(path: str) -> dict:
     return data
 
 
-def save(data: dict) -> dict:
-    current = load()
-    merged = {**current, **(data or {})}
-    normalized = normalize(merged)
-    normalized["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    tmp = _PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(normalized, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, _PATH)
-    return normalized
-
-
-def prompt_text() -> str:
-    """返回真正喂给回复模型 / Jev 排序的 Skill；未启用时为空。"""
-    data = load()
-    if not data["enabled"]:
+def prompt_text(persona_id: str | None = None) -> str:
+    data = effective(persona_id)
+    if not data:
         return ""
 
     parts = [
         f"【人格 Skill：{data['name']}】",
         f"角色：{data['role']}",
-        "这是当前启用的人格规则。按这个人格的口吻和处理逻辑行动，"
+        "这是当前会话选用的人格规则。按这个人格的口吻和处理逻辑行动，"
         "但绝不能据此编造价格、库存、承诺、订单状态、车辆事实或其它未经确认的信息。",
     ]
     if data["summary"]:
@@ -166,7 +299,7 @@ def _extract_json(content: str) -> dict:
 
 
 def distill(corpus: str, extra: str = "", source_stats: dict | None = None) -> dict:
-    """用当前起草模型把聊天样本压缩成可编辑 Skill。"""
+    """用当前起草模型把聊天样本压缩成一个新的可编辑人格。"""
     corpus = str(corpus or "").strip()
     extra = str(extra or "").strip()
     if not corpus and not extra:
@@ -182,12 +315,11 @@ def distill(corpus: str, extra: str = "", source_stats: dict | None = None) -> d
         "输出必须是严格 JSON 对象，不要 Markdown，不要解释。字段固定为："
         "summary 字符串；tone_rules 字符串数组；decision_rules 字符串数组；"
         "common_phrases 字符串数组；forbidden_phrases 字符串数组；examples 字符串数组。\n"
-        "decision_rules 要写成可执行的客服判断规则，例如“信息不足时先询问订单号，不先承诺处理结果”。"
-        "forbidden_phrases 只写从样本能合理推断用户明确不会用或应避免的客服腔；不要凭空扩展。"
+        "decision_rules 要写成可执行的客服判断规则。"
         "examples 每条压成一行：客户：…｜我：…｜逻辑：…。最多 10 条。"
     )
     user = (
-        "请从下面的聊天样本蒸馏出一个可编辑的个人客服 Skill。\n"
+        "请从下面的聊天样本蒸馏出一个可编辑的人格 Skill。\n"
         "优先学习“我”的真实回复方式，同时总结“遇到什么情况→我通常怎么处理”。\n\n"
         "<<<本地聊天历史开始>>>\n" + corpus[:36000] + "\n<<<本地聊天历史结束>>>"
     )
@@ -213,6 +345,9 @@ def distill(corpus: str, extra: str = "", source_stats: dict | None = None) -> d
         timeout=60,
     )
     data = normalize(_extract_json(content))
+    data["id"] = ""
+    data["name"] = "我的蒸馏人格"
+    data["role"] = "personal_customer_service"
     data["enabled"] = True
     data["source_stats"] = source_stats or {}
     return data
