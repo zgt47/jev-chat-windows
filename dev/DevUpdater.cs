@@ -66,7 +66,7 @@ namespace JevChatDevUpdater
             detailBox.Multiline = true;
             detailBox.ReadOnly = true;
             detailBox.ScrollBars = ScrollBars.Vertical;
-            detailBox.Text = "只更新 main.py / app / core。\r\n不会修改 _internal、config.json、chat_profiles.json。";
+            detailBox.Text = "强制整包同步 main.py / app / core，并清理旧 Python 缓存。\r\n不会修改 _internal、config.json、chat_profiles.json、knowledge.json、persona_skills.json、chat_history.json。";
             Controls.Add(detailBox);
 
             retryButton = new Button();
@@ -116,7 +116,7 @@ namespace JevChatDevUpdater
             retryButton.Enabled = false;
             progress.Style = ProgressBarStyle.Marquee;
             statusLabel.Text = "正在开始更新…";
-            detailBox.Text = "只更新 main.py / app / core。\r\n不会修改 _internal、config.json、chat_profiles.json。";
+            detailBox.Text = "强制整包同步 main.py / app / core，并清理旧 Python 缓存。\r\n不会修改 _internal、config.json、chat_profiles.json、knowledge.json、persona_skills.json、chat_history.json。";
             worker.RunWorkerAsync();
         }
 
@@ -172,10 +172,19 @@ namespace JevChatDevUpdater
 
                 try
                 {
-                    Report("正在替换 app / core / main.py…");
+                    Report("正在清理旧源码缓存…");
+                    DeleteDirectoryIfExists(Path.Combine(root, "__pycache__"));
+
+                    Report("正在整包替换 app / core / main.py…");
                     ReplaceDirectory(sourceApp, Path.Combine(root, "app"));
                     ReplaceDirectory(sourceCore, Path.Combine(root, "core"));
                     File.Copy(sourceMain, Path.Combine(root, "main.py"), true);
+
+                    // 防止“旧主程序 + 新服务层”或“新主程序 + 旧服务层”混跑。
+                    string analysisService = Path.Combine(root, "app", "services", "analysis_service.py");
+                    string editGuard = Path.Combine(root, "app", "services", "edit_guard.py");
+                    if (!File.Exists(analysisService) || !File.Exists(editGuard))
+                        throw new InvalidOperationException("源码同步不完整：app/services 缺少当前版本模块");
 
                     string guide = Path.Combine(source, "DEV使用说明.md");
                     if (File.Exists(guide))
@@ -262,6 +271,14 @@ namespace JevChatDevUpdater
                 ReplaceDirectory(coreBackup, Path.Combine(root, "core"));
             if (File.Exists(mainBackup))
                 File.Copy(mainBackup, Path.Combine(root, "main.py"), true);
+        }
+
+        private static void DeleteDirectoryIfExists(string directory)
+        {
+            if (!Directory.Exists(directory))
+                return;
+            ClearReadOnly(directory);
+            Directory.Delete(directory, true);
         }
 
         private static void ReplaceDirectory(string source, string destination)
