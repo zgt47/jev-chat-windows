@@ -7,7 +7,7 @@ from math import isfinite
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QRegion
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap, QRegion
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QMenu, QPushButton, QSlider, QSizeGrip, QSizePolicy,
     QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
@@ -44,6 +44,24 @@ _STYLE_PRESETS = [
 
 def _choice(answers, name):
     return CHOICE_LABELS[name].get((answers.get(name) or {}).get("choice"), "暂未判断")
+
+
+def _jev_icon(color=_GREEN, size=64):
+    """和悬浮球同一视觉：圆形底 + 白色 Jev。托盘和窗口图标共用。"""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(color))
+    margin = max(2, size // 16)
+    painter.drawEllipse(margin, margin, size - margin * 2, size - margin * 2)
+    painter.setPen(QColor("#ffffff"))
+    font = QFont("Segoe UI", max(8, int(size * 0.20)), QFont.DemiBold)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, "Jev")
+    painter.end()
+    return QIcon(pixmap)
 
 
 class _FitCombo(ComboBox):
@@ -279,10 +297,13 @@ class Overlay:
         self._shown = ""  # 界面上正在看的会话（浏览时和上面不一样）
         self._force_quit = False
         self._tray_notice_shown = False
+        self._bubble_color = _GREEN
+        self._jevIcon = _jev_icon(self._bubble_color)
         self.app.setQuitOnLastWindowClosed(False)
         self.win = _MainWindow(self._relayout, self._close_requested)
         self.win.setObjectName("assistantWindow")
         self.win.setWindowTitle("JevChat-Windows")
+        self.win.setWindowIcon(self._jevIcon)
         flags = Qt.Window | Qt.FramelessWindowHint
         if settings.always_on_top():
             flags |= Qt.WindowStaysOnTopHint
@@ -1597,8 +1618,8 @@ class Overlay:
         self.win.setWindowOpacity(1.0 - value / 100.0)
 
     def _setup_tray(self):
-        self.tray = QSystemTrayIcon(self.app.style().standardIcon(QStyle.SP_ComputerIcon), self.win)
-        self.tray.setToolTip("JevChat-Windows")
+        self.tray = QSystemTrayIcon(self._jevIcon, self.win)
+        self.tray.setToolTip("Jev")
         menu = QMenu()
         show_action = QAction("显示主窗口", menu)
         show_action.triggered.connect(self._show_from_tray)
@@ -1632,9 +1653,13 @@ class Overlay:
     def _show_from_tray(self):
         if self._collapsed:
             self._expand_page()
-        self.win.show()
+        self.win.showNormal()
         self.win.raise_()
         self.win.activateWindow()
+
+    def show_main_window(self):
+        """供单实例激活使用：托盘、最小化、悬浮球状态都恢复成完整主界面。"""
+        self._show_from_tray()
 
     def _show_as_bubble(self):
         self.win.show()
@@ -1962,10 +1987,15 @@ class Overlay:
             color = "#b44832"
         elif isinstance(score, (int, float)) and score >= 3:
             color = "#b07a21"
+        self._bubble_color = color
         self.bubbleButton.setStyleSheet(
             f"QPushButton {{ background:{color}; color:white; border:none; border-radius:29px;"
             " font-size:14px; font-weight:600; }}"
         )
+        self._jevIcon = _jev_icon(color)
+        self.win.setWindowIcon(self._jevIcon)
+        if hasattr(self, "tray"):
+            self.tray.setIcon(self._jevIcon)
 
     def _clear_cards(self):
         for card in self.cards:

@@ -29,6 +29,68 @@ state = {"area": None, "busy": False, "rerun": None, "hwnd": None, "chat": ""}
 results = queue.Queue()
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
 
+_SINGLE_MUTEX_NAME = r"Local\JevChat-Windows-SingleInstance-v1"
+_SINGLE_EVENT_NAME = r"Local\JevChat-Windows-Activate-v1"
+_single_mutex = None
+_single_event = None
+
+
+def init_single_instance():
+    """只允许一个 Jev 主实例。
+
+    第二次启动时不创建新 UI，而是：
+    1. 通知已运行实例展开；
+    2. 尝试把它直接提到前台；
+    3. 当前这个新进程立即结束。
+    """
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+
+    kernel32.CreateEventW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+
+    event_handle = kernel32.CreateEventW(None, False, False, _SINGLE_EVENT_NAME)
+    kernel32.SetLastError(0)
+    mutex_handle = kernel32.CreateMutexW(None, False, _SINGLE_MUTEX_NAME)
+    already_running = kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+
+    if already_running:
+        if event_handle:
+            kernel32.SetEvent(ctypes.c_void_p(event_handle))
+
+        # 用户刚刚主动双击了第二次启动，借这个前台资格把旧窗口提起来。
+        hwnd = user32.FindWindowW(None, "JevChat-Windows")
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+
+        if mutex_handle:
+            kernel32.CloseHandle(ctypes.c_void_p(mutex_handle))
+        if event_handle:
+            kernel32.CloseHandle(ctypes.c_void_p(event_handle))
+        return False, None, None
+
+    return True, mutex_handle, event_handle
+
+
+def close_single_instance_handles():
+    kernel32 = ctypes.windll.kernel32
+    for handle in (_single_event, _single_mutex):
+        if handle:
+            try:
+                kernel32.CloseHandle(ctypes.c_void_p(handle))
+            except Exception:
+                pass
+
+
+def check_activate_request():
+    """主循环里无阻塞检查：第二次启动 JevChat-Dev.exe 时展开旧实例。"""
+    if not _single_event:
+        return
+    if ctypes.windll.kernel32.WaitForSingleObject(ctypes.c_void_p(_single_event), 0) == 0:
+        ov.show_main_window()
+
 
 def chat_of(title):
     if title in chats:
@@ -307,6 +369,7 @@ def drain():
 
 def tick():
     try:
+        check_activate_request()
         drain()
         while not update_result.empty():
             latest, url = update_result.get()
@@ -338,6 +401,11 @@ def tick():
 
 if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本文件，没这行就无限套娃开进程
     multiprocessing.freeze_support()  # 打包成 exe 后 spawn 出来的子进程会重跑一遍 exe，没这行就无限弹界面
+
+    _is_primary, _single_mutex, _single_event = init_single_instance()
+    if not _is_primary:
+        raise SystemExit(0)
+
     ctypes.windll.user32.SetProcessDPIAware()
     q = multiprocessing.Queue()
     capture_on = multiprocessing.Event()  # 父子进程共用的开关，置位=采集
@@ -367,3 +435,4 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
     finally:
         if child is not None:
             child.terminate()
+        close_single_instance_handles()
