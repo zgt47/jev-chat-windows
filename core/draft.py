@@ -33,6 +33,9 @@ SYSTEM = (
     "- 允许不完整的句子、口头语、长短错落；别每条都以「好」「嗯」开头；\n"
     "- 默认宁可偏平、偏短、偏克制，也不要油腻、自来熟、故作热情；不要为了显得会聊天而硬接话。\n"
     "- 绝不编造 me 的经历、兴趣、习惯、共同回忆或事实；聊天记录没出现过，就不要说「我也」「我以前」「我单曲循环过」之类。\n"
+    "- 你现在唯一能执行的动作是“发送这一条文字消息”。你不能真的发送图片、截图、报告、附件，不能查外部系统、不能打电话、不能付款。"
+    "因此绝不能写「我发你了」「这就发你」「我查过了」「我看了报告」「电话打了」等假装动作已经执行的话。"
+    "对方要求这些现实动作时，要么明确说需要人工处理，要么只回应你当前确实能确认的文字事实。\n"
     "- 三条不是「温暖版／负责版／行动版」的模板，是同一个人在三个心情下随手打的，"
     "长短不一，其中一条可以很短（几个字）。\n"
     "风格：优先模仿 me 在对话里的用词、句长、标点和语气词习惯（下面会给样本）；"
@@ -105,6 +108,18 @@ _INJECT = re.compile(
     re.I)
 _LAUGH = re.compile(r"^[哈嘿嘻呵hx6]+$", re.I)
 
+# Jev 当前只能自动发送文字，不能真的执行附件/查询/电话/支付等外部动作。
+# 这些候选即使模型生成出来也直接丢掉，避免“发你了”这种虚假动作进入自动发送。
+_FAKE_ACTION = re.compile(
+    r"(?:我|这边).{0,8}(?:"
+    r"发你|给你发|传你|给你传|发过去|传过去|截图发|报告发|附件发"
+    r"|查过|查好了|查到了|核对过|核对好了"
+    r"|看过报告|看了报告|打开了|看到了附件"
+    r"|打过电话|电话打了|转账了|付款了"
+    r")",
+    re.I,
+)
+
 
 def _norm(t: str) -> str:
     return re.sub(r"[\s\W_]+", "", t).lower()
@@ -140,7 +155,13 @@ def _sanitize(cands: list[str], suspects: list[str], her_recent: list[str] = ())
     seen, out = set(), []
     for c in cands:
         n = _norm(c)
-        if not n or n in seen or (len(n) >= 2 and any(n in b for b in bad)) or n in echo:
+        if (
+            not n
+            or n in seen
+            or (len(n) >= 2 and any(n in b for b in bad))
+            or n in echo
+            or _FAKE_ACTION.search(c)
+        ):
             continue
         seen.add(n)
         out.append(c)
@@ -197,7 +218,11 @@ def draft_candidates(messages: list, relationship: str, provider: str = "deepsee
         user += f"\n\n这是群聊。你要回复的是「{reply_to}」的话，三条候选都对 TA 说，不要@别人。"
     if guidance and guidance.strip():
         user += f"\n\n{guidance.strip()}"
-    user += "\n\n输出恰好 3 条候选，JSON 数组，每条一句。"
+    user += (
+        "\n\n能力边界再确认：你只能发文字。没有真实工具回执的情况下，禁止声称已经发送图片/报告/附件、"
+        "已经查过外部记录、已经打电话或已经完成其它现实动作。"
+        "\n输出恰好 3 条候选，JSON 数组，每条一句。"
+    )
     key = _api_key(LLM_ENV)  # 起草只有这一把 key，换来源不用重填
     # 1.2：DeepSeek 自己推荐的闲聊档位，0.8 出来的话太板正
     # max_tokens：三句话本来 400 够，但思考过程也算进 max_tokens，开了思考模式 400 会把答案截断

@@ -304,8 +304,10 @@ def build_rank_question(candidates: list[str], persona_hint: str = "") -> dict:
                 "given the conversation and the other person's true need? "
                 "Prefer a reply that matches the best action type. "
                 "Penalize dismissive, over-promising, or off-topic replies. "
-                "If the facts are not yet confirmed, prefer the candidate that looks them up "
-                "instead of faking memory or a vague apology."
+                "If facts are not confirmed, do not reward a candidate that pretends an external action has already happened. "
+                "The app can only send text: claiming to have sent an attachment, checked an external record, made a phone call, "
+                "or completed another real-world action without evidence is invalid. "
+                "Prefer a truthful holding line or a request for human handling over a fabricated action."
                 + persona_rule
             ),
             "criteria": {key: text for key, text in zip(keys, candidates)},
