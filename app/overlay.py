@@ -2416,17 +2416,17 @@ class Overlay:
         self._go_home()
 
     def _auto_send_toggled(self, on):
-        """首页快捷开关：立即保存，客服模式不必再进入设置页。"""
+        """自动发送只在本次运行有效；每次重启 Jev 都强制恢复关闭。"""
         try:
             settings.save(auto_send_on=on)
         except Exception:
             self.autoSendSwitch.blockSignals(True)
             self.autoSendSwitch.setChecked(not on)
             self.autoSendSwitch.blockSignals(False)
-            self.set_status("自动发送开关保存失败，请检查配置文件是否可写。", "error")
+            self.set_status("自动发送开关修改失败，请检查配置文件是否可写。", "error")
             return
         self.set_status(
-            "自动发送已开启：推荐回复会在安全检查通过后自动发出。"
+            "自动发送已开启（仅本次运行有效）：重启 Jev 后会自动关闭。"
             if on else
             "自动发送已关闭，回复只会显示在 Jev 中。",
             "success" if on else "idle",

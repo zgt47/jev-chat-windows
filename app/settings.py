@@ -61,6 +61,10 @@ _DEFAULT_ALWAYS_ON_TOP = True
 _DEFAULT_AUTO_ANALYZE = True
 _DEFAULT_AUTO_SEND = False
 _DEFAULT_AUTO_SEND_DELAY = 2
+
+# 自动发送属于高风险动作：只在本次运行有效，绝不跨重启恢复。
+# 即使旧 config.json 里曾经保存为 true，新进程启动后也强制从 false 开始。
+_SESSION_AUTO_SEND = False
 _DEFAULT_TRANSPARENCY = 0
 _DEFAULT_RECORD_HISTORY = False
 _DEFAULT_HISTORY_LIMIT = 30
@@ -170,7 +174,14 @@ def auto_analyze() -> bool:
 
 
 def auto_send() -> bool:
-    return bool(_read("auto_send", _DEFAULT_AUTO_SEND))
+    """本次运行会话的自动发送状态；每次启动都强制为关闭。"""
+    return bool(_SESSION_AUTO_SEND)
+
+
+def set_auto_send(on: bool) -> None:
+    """只修改内存状态，不跨重启保存。"""
+    global _SESSION_AUTO_SEND
+    _SESSION_AUTO_SEND = bool(on)
 
 
 def auto_send_delay() -> int:
@@ -396,6 +407,11 @@ def save(
     send_delay = auto_send_delay() if auto_send_delay_n is None else max(1, min(10, int(auto_send_delay_n)))
     wl = whitelist() if whitelist_items is None else [str(x).strip() for x in whitelist_items if str(x).strip()]
 
+    # 自动发送只在当前进程有效。调用 save(auto_send_on=...) 时更新内存，
+    # 但磁盘配置永远写 false，确保下次启动一定是关闭状态。
+    if auto_send_on is not None:
+        set_auto_send(auto_send_on)
+
     # 只有用户这次明确输入了判断 key，才更新“这把 key 属于哪个来源”。
     # 留空=保留旧 key，同时保留它原来的来源标签。
     key_provider = (
@@ -420,7 +436,7 @@ def save(
         "debug_view": flag(debug_view_on, debug_view),
         "always_on_top": flag(always_on_top_on, always_on_top),
         "auto_analyze": flag(auto_analyze_on, auto_analyze),
-        "auto_send": flag(auto_send_on, auto_send),
+        "auto_send": False,
         "auto_send_delay": send_delay,
         "whitelist": wl,
         "overlay_transparency": transparency_value,
