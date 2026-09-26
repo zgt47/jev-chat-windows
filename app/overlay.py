@@ -1054,6 +1054,26 @@ class Overlay:
         box.setContentsMargins(16, 16, 16, 18)
         box.setSpacing(10)
 
+        box.addWidget(_label("已保存人格", 13))
+        self.personaListBox = ComboBox()
+        self.personaListBox.setMinimumWidth(0)
+        self.personaListBox.currentIndexChanged.connect(self._persona_selected)
+        box.addWidget(self.personaListBox)
+
+        manage_row = QHBoxLayout()
+        self.personaNewButton = PushButton("新建")
+        self.personaNewButton.clicked.connect(self._persona_new)
+        manage_row.addWidget(self.personaNewButton)
+        self.personaDeleteButton = PushButton("删除当前")
+        self.personaDeleteButton.clicked.connect(self._persona_delete)
+        manage_row.addWidget(self.personaDeleteButton)
+        self.personaDefaultButton = PushButton("设为默认")
+        self.personaDefaultButton.clicked.connect(self._persona_set_default)
+        manage_row.addWidget(self.personaDefaultButton)
+        manage_row.addStretch(1)
+        box.addLayout(manage_row)
+        box.addWidget(self._hint("★ 表示默认人格；会话设为「跟随默认人格」时会使用它。"))
+
         box.addWidget(_label("Skill 名称", 13))
         self.personaNameEdit = LineEdit()
         self.personaNameEdit.setPlaceholderText("例如：我的客服 / 二手车销冠 / 挑剔买家")
@@ -1155,8 +1175,92 @@ class Overlay:
         self.personaFeedback.setText(text)
         self.personaFeedback.show()
 
-    def _load_persona(self):
-        data = persona_skill.load()
+    def _refresh_persona_list(self, select_id=None):
+        skills = persona_skill.list_skills()
+        default_id = persona_skill.default_id()
+        self._personaListIds = [x["id"] for x in skills]
+
+        self.personaListBox.blockSignals(True)
+        self.personaListBox.clear()
+        self.personaListBox.addItems([
+            ("★ " if x["id"] == default_id else "") +
+            x["name"] +
+            ("" if x.get("enabled") else "（已停用）")
+            for x in skills
+        ])
+        self.personaListBox.blockSignals(False)
+
+        if not skills:
+            self._persona_new()
+            return
+
+        target = select_id or default_id or skills[0]["id"]
+        try:
+            index = self._personaListIds.index(target)
+        except ValueError:
+            index = 0
+        self.personaListBox.blockSignals(True)
+        self.personaListBox.setCurrentIndex(index)
+        self.personaListBox.blockSignals(False)
+        self._load_persona(self._personaListIds[index])
+
+    def _persona_selected(self, index):
+        ids = getattr(self, "_personaListIds", [])
+        if 0 <= index < len(ids):
+            self._load_persona(ids[index])
+
+    def _persona_new(self):
+        self._personaCurrentId = None
+        self._personaPendingRole = "custom"
+        self._personaPendingStats = {}
+        self.personaNameEdit.setText("")
+        self.personaEnabledSwitch.setChecked(True)
+        self.personaSummaryEdit.clear()
+        self.personaToneEdit.clear()
+        self.personaDecisionEdit.clear()
+        self.personaCommonEdit.clear()
+        self.personaForbiddenEdit.clear()
+        self.personaExamplesEdit.clear()
+        self.personaExtraEdit.clear()
+        self.personaHistoryState.setText("新人格 · 尚未保存")
+        self.personaDeleteButton.setEnabled(False)
+        self.personaDefaultButton.setEnabled(False)
+        self.personaFeedback.hide()
+        self.personaNameEdit.setFocus()
+
+    def _persona_delete(self):
+        skill_id = getattr(self, "_personaCurrentId", None)
+        if not skill_id:
+            return
+        try:
+            persona_skill.delete(skill_id)
+        except Exception as exc:
+            self._persona_feedback("删除失败：" + str(exc), error=True)
+            return
+        self._refresh_persona_list()
+        self._refresh_profile_persona_options()
+        self._refresh_persona_summary()
+        self._persona_feedback("已删除这个人格。")
+
+    def _persona_set_default(self):
+        skill_id = getattr(self, "_personaCurrentId", None)
+        if not skill_id:
+            self._persona_feedback("先保存这个人格，再设为默认。", error=True)
+            return
+        try:
+            persona_skill.set_default(skill_id)
+        except Exception as exc:
+            self._persona_feedback("设置默认失败：" + str(exc), error=True)
+            return
+        self._refresh_persona_list(skill_id)
+        self._refresh_profile_persona_options()
+        self._refresh_persona_summary()
+        self._persona_feedback("已设为默认人格。")
+
+    def _load_persona(self, skill_id=None):
+        data = persona_skill.load(skill_id)
+        self._personaCurrentId = data.get("id") or None
+        self._personaPendingRole = data.get("role") or "custom"
         self.personaNameEdit.setText(data.get("name") or "未命名人格")
         self.personaEnabledSwitch.setChecked(data["enabled"])
         self.personaSummaryEdit.setPlainText(data["summary"])
@@ -1168,17 +1272,22 @@ class Overlay:
         self._personaPendingStats = data.get("source_stats", {})
 
         _, stats = chat_history.training_corpus()
-        updated = data.get("updated_at") or "尚未蒸馏"
+        updated = data.get("updated_at") or "尚未更新"
+        default_text = " · 当前默认" if data.get("id") and data.get("id") == persona_skill.default_id() else ""
         self.personaHistoryState.setText(
             f"本地历史：{stats['chats']} 个会话 · {stats['messages']} 条消息 · "
-            f"{stats['my_messages']} 条我的回复\nSkill 更新：{updated}"
+            f"{stats['my_messages']} 条我的回复\nSkill 更新：{updated}{default_text}"
         )
+        self.personaDeleteButton.setEnabled(bool(data.get("id")))
+        self.personaDefaultButton.setEnabled(bool(data.get("id")) and data.get("id") != persona_skill.default_id())
         self.personaFeedback.hide()
 
     def _save_persona(self):
-        old = persona_skill.load()
+        current_id = getattr(self, "_personaCurrentId", None)
+        old = persona_skill.load(current_id) if current_id else {}
         data = {
             "schema": "jev-persona-skill/v1",
+            "id": current_id or "",
             "name": self.personaNameEdit.text().strip() or "未命名人格",
             "role": getattr(self, "_personaPendingRole", old.get("role", "custom")),
             "enabled": self.personaEnabledSwitch.isChecked(),
@@ -1193,18 +1302,22 @@ class Overlay:
         if data["enabled"] and not any(
             data[k] for k in ("summary", "tone_rules", "decision_rules", "common_phrases", "examples")
         ):
-            self._persona_feedback("Skill 还是空的：先蒸馏，或者手动填写规则后再启用。", error=True)
+            self._persona_feedback("Skill 还是空的：先蒸馏、导入，或者手动填写规则后再启用。", error=True)
             return
         try:
-            persona_skill.save(data)
+            saved = persona_skill.save(data, current_id)
         except Exception as exc:
             self._persona_feedback("保存失败：" + str(exc), error=True)
             return
-        self._load_persona()
+
+        self._personaCurrentId = saved["id"]
+        self._refresh_persona_list(saved["id"])
+        self._refresh_profile_persona_options()
         self._refresh_persona_summary()
-        self._persona_feedback("个人客服 Skill 已保存，下一次生成回复开始生效。")
+        self._persona_feedback(f"人格「{saved['name']}」已保存，下一次生成回复开始生效。")
 
     def _apply_persona_to_editor(self, data):
+        self._personaCurrentId = None
         self.personaNameEdit.setText(data.get("name") or "未命名人格")
         self.personaEnabledSwitch.setChecked(bool(data.get("enabled", True)))
         self.personaSummaryEdit.setPlainText(data.get("summary", ""))
@@ -1304,7 +1417,7 @@ class Overlay:
         )
 
     def open_persona(self):
-        self._load_persona()
+        self._refresh_persona_list()
         self.pages.setCurrentWidget(self.personaPage)
         self.settingsButton.setEnabled(True)
 

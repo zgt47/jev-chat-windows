@@ -20,3 +20,4 @@ dist/
 chat_history.json
 knowledge.json
 persona_skill.json
+persona_skills.json
