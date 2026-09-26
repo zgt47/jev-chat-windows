@@ -100,6 +100,19 @@ class _FitCombo(ComboBox):
         return self.fontMetrics().elidedText(text, Qt.ElideRight, max(24, avail))
 
 
+
+class _NoWheelSpinBox(SpinBox):
+    """鼠标滚轮只滚页面，不意外改数字。"""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class _NoWheelSlider(QSlider):
+    """透明度必须主动拖动/点击调整，滚轮只留给外层页面。"""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 def _label(text="", size=14, color=None, bold=False, parent=None):
     label = BodyLabel(text, parent)
     label.setTextFormat(Qt.PlainText)
@@ -873,11 +886,54 @@ class Overlay:
         self.settingsButton.setEnabled(True)
 
     def _build_settings(self):
-        self.settingsPage, body = self._scroll_page()
+        # 设置页单独做“固定头部 + 可滚内容”，返回/保存不再跟着内容滚走。
+        self.settingsPage = QWidget()
+        page = QVBoxLayout(self.settingsPage)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
+
+        fixed_header = QWidget(self.settingsPage)
+        fixed_header.setObjectName("settingsFixedHeader")
+        fixed_header.setStyleSheet(
+            "QWidget#settingsFixedHeader { background:#f5f7f6; border-bottom:1px solid #e1e7e3; }"
+        )
+        header_box = QVBoxLayout(fixed_header)
+        header_box.setContentsMargins(14, 9, 14, 8)
+        header_box.setSpacing(4)
+
         heading = QHBoxLayout()
+        heading.setSpacing(8)
         heading.addWidget(_tool(FIF.RETURN, "返回回复建议", self._back_home))
         heading.addWidget(_label("全局设置", 23, "#24382d", True), 1)
-        body.addLayout(heading)
+        self.saveButton = PrimaryPushButton("保存全局设置")
+        self.saveButton.clicked.connect(self._save)
+        heading.addWidget(self.saveButton)
+        header_box.addLayout(heading)
+
+        self.settingsFeedback = _label("", 12, _GREEN)
+        self.settingsFeedback.hide()
+        header_box.addWidget(self.settingsFeedback)
+        page.addWidget(fixed_header)
+
+        scroll = ScrollArea(self.settingsPage)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setAutoFillBackground(False)
+
+        content = QWidget()
+        content.setObjectName("settingsPageContent")
+        content.setStyleSheet("QWidget#settingsPageContent { background: transparent; }")
+        body = QVBoxLayout(content)
+        body.setContentsMargins(20, 12, 20, 12)
+        body.setSpacing(14)
+        scroll.setWidget(content)
+        page.addWidget(scroll, 1)
+
+        self.pages.addWidget(self.settingsPage)
+        self._pageLayouts.append(body)
+
         body.addWidget(_label(
             "这里的设置对所有会话共用。关系和说话风格请在首页的「会话关系」里单独设置。",
             13, _MUTED
@@ -891,7 +947,7 @@ class Overlay:
 
         context_label = _label("参考上下文", 13)
         box.addWidget(context_label)
-        self.contextBox = SpinBox()
+        self.contextBox = _NoWheelSpinBox()
         self.contextBox.setRange(3, 30)
         self.contextBox.setAccessibleName("参考的最近消息条数")
         context_label.setBuddy(self.contextBox)
@@ -923,7 +979,7 @@ class Overlay:
         self.transparencyValue.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         transparency_row.addWidget(self.transparencyValue)
         box.addLayout(transparency_row)
-        self.transparencySlider = QSlider(Qt.Horizontal)
+        self.transparencySlider = _NoWheelSlider(Qt.Horizontal)
         self.transparencySlider.setRange(0, 40)
         self.transparencySlider.setSingleStep(1)
         self.transparencySlider.setPageStep(5)
@@ -942,7 +998,7 @@ class Overlay:
         self.historySwitch.setOffText("关")
         history_row.addWidget(self.historySwitch)
         box.addLayout(history_row)
-        self.historyLimitBox = SpinBox()
+        self.historyLimitBox = _NoWheelSpinBox()
         self.historyLimitBox.setRange(10, 100)
         self.historyLimitBox.setSuffix(" 条")
         box.addWidget(self.historyLimitBox)
@@ -1020,19 +1076,7 @@ class Overlay:
         ))
         body.addWidget(models)
 
-        self.settingsFeedback = _label("", 13, _GREEN)
-        self.settingsFeedback.hide()
-        body.addWidget(self.settingsFeedback)
-        actions = QHBoxLayout()
-        back = PushButton("返回")
-        back.clicked.connect(self._back_home)
-        actions.addWidget(back)
-        actions.addStretch(1)
-        self.saveButton = PrimaryPushButton("保存全局设置")
-        self.saveButton.clicked.connect(self._save)
-        actions.addWidget(self.saveButton)
-        body.addLayout(actions)
-        body.addWidget(self._hint("保存后用于所有会话下一次生成的回复。"))
+        body.addWidget(self._hint("修改完成后，可随时使用顶部固定栏的「保存全局设置」。"))
         body.addStretch(1)
         self._load_settings()
 
