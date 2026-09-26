@@ -289,8 +289,12 @@ def build_rank_question(candidates: list[str], persona_hint: str = "") -> dict:
     persona_rule = ""
     if persona_hint.strip():
         persona_rule = (
-            " Also prefer the candidate that best follows the user's own customer-service "
-            "persona and decision rules below, without inventing facts: " + persona_hint[:1800]
+            " Also use the persona below as a long-term behavioral tendency, not a checklist. "
+            "Do not reward a candidate merely for asking more questions, giving more complete information, "
+            "or pushing the conversation forward. Prefer what this same person would naturally send at this exact moment. "
+            "A short acknowledgement or no new task can be better than an over-complete reply. "
+            "Only apply a decision rule when the current message actually triggers it, and never invent facts: "
+            + persona_hint[:1800]
         )
     return {
         "best_reply": {
