@@ -18,3 +18,4 @@ build/
 dist/
 *.spec.bak
 chat_history.json
+knowledge.json

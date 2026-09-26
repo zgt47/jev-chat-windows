@@ -13,7 +13,7 @@ import threading
 import traceback
 from collections import deque
 
-from app import chat_history, chat_profiles, settings, update, worker
+from app import chat_history, chat_profiles, knowledge, settings, update, worker
 from app.capture import find_wechat_hwnd
 from app.fill import fill
 from app.overlay import Overlay
@@ -120,16 +120,22 @@ def analyze_bg(msgs, title, revision, reply_to=None):
         relationship = profile["relationship"]
         if profile.get("notes"):
             relationship += "\n联系人备注：" + profile["notes"]
-        results.put(("ok", analyze(msgs, relationship, context=settings.context(),
-                                   model=settings.draft_model() or None,
-                                   provider=settings.draft_provider(),
-                                   base_url=settings.draft_base_url() or None,
-                                   reply_to=reply_to, style=profile["style"],
-                                   thinking=settings.thinking(),
-                                   jev_provider=settings.jev_provider(),
-                                   jev_model=settings.jev_model() or None,
-                                   jev_base_url=settings.jev_base_url() or None),
-                     title, revision))
+        matched_notes = knowledge.match(title, msgs)
+        if matched_notes:
+            relationship += "\n知识库背景（只把它当事实，不要编造）：\n" + "\n".join(
+                f"- {n['title'] or '笔记'}：{n['content']}" for n in matched_notes
+            )
+        result = analyze(msgs, relationship, context=settings.context(),
+                         model=settings.draft_model() or None,
+                         provider=settings.draft_provider(),
+                         base_url=settings.draft_base_url() or None,
+                         reply_to=reply_to, style=profile["style"],
+                         thinking=settings.thinking(),
+                         jev_provider=settings.jev_provider(),
+                         jev_model=settings.jev_model() or None,
+                         jev_base_url=settings.jev_base_url() or None)
+        result["knowledge_count"] = len(matched_notes)
+        results.put(("ok", result, title, revision))
     except Exception as e:
         results.put(("err", f"分析失败: {e}", title, revision))
 

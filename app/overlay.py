@@ -18,7 +18,7 @@ from qfluentwidgets import (
     setCustomStyleSheet, setFont, setTheme, setThemeColor,
 )
 
-from app import chat_profiles, settings
+from app import chat_profiles, knowledge, settings
 from app.version import VERSION
 from core import jev_client, llm, providers
 from core.questions import CHOICE_LABELS
@@ -356,6 +356,7 @@ class Overlay:
         outer.addWidget(self.pages, 1)
         self._build_home()
         self._build_profile()
+        self._build_knowledge()
         self._build_settings()
         self._refresh_profile_summary()
         self.footerBar = QWidget(self.win)
@@ -485,6 +486,10 @@ class Overlay:
         self.profileButton.setToolTip("给当前聊天对象单独设置关系和说话风格")
         self.profileButton.clicked.connect(self.open_profile)
         profile_row.addWidget(self.profileButton)
+        self.knowledgeButton = PushButton("知识库")
+        self.knowledgeButton.setToolTip("管理会按关键词或常驻规则带入分析的本地笔记")
+        self.knowledgeButton.clicked.connect(self.open_knowledge)
+        profile_row.addWidget(self.knowledgeButton)
         body.addLayout(profile_row)
         self.targetRow = QWidget()  # 只有开了「群聊指定回复对象」且这个会话是群聊才露出来
         target_row = QHBoxLayout(self.targetRow)
@@ -655,6 +660,13 @@ class Overlay:
         box.addWidget(self.profileStyleEdit)
         box.addWidget(self._hint("默认「自然克制」：正常、克制、短句、不装熟。也可以选其他风格或自定义。"))
 
+        alias_label = _label("别名（可选，每行一个）", 13)
+        box.addWidget(alias_label)
+        self.profileAliasesEdit = PlainTextEdit()
+        self.profileAliasesEdit.setPlaceholderText("例如：老王\n王经理")
+        self.profileAliasesEdit.setFixedHeight(62)
+        box.addWidget(self.profileAliasesEdit)
+
         notes_label = _label("联系人备注（可选）", 13)
         box.addWidget(notes_label)
         self.profileNotesEdit = PlainTextEdit()
@@ -679,6 +691,146 @@ class Overlay:
         actions.addWidget(self.profileSaveButton)
         body.addLayout(actions)
         body.addStretch(1)
+
+    def _build_knowledge(self):
+        self.knowledgePage, body = self._scroll_page()
+        heading = QHBoxLayout()
+        heading.addWidget(_tool(FIF.RETURN, "返回回复建议", self._back_home))
+        heading.addWidget(_label("知识库", 23, "#24382d", True), 1)
+        body.addLayout(heading)
+        body.addWidget(_label(
+            "全部只保存在本机。常驻笔记每次都带；其它笔记在标题或标签命中会话标题/最近消息时带入，最多 5 条。",
+            13, _MUTED
+        ))
+
+        editor = _Surface()
+        box = QVBoxLayout(editor)
+        box.setContentsMargins(16, 16, 16, 18)
+        box.setSpacing(10)
+
+        box.addWidget(_label("已有笔记", 13))
+        self.knowledgeList = ComboBox()
+        self.knowledgeList.currentIndexChanged.connect(self._knowledge_selected)
+        box.addWidget(self.knowledgeList)
+
+        box.addWidget(_label("标题", 13))
+        self.knowledgeTitleEdit = LineEdit()
+        self.knowledgeTitleEdit.setPlaceholderText("例如：口味忌口")
+        box.addWidget(self.knowledgeTitleEdit)
+
+        box.addWidget(_label("标签", 13))
+        self.knowledgeTagsEdit = LineEdit()
+        self.knowledgeTagsEdit.setPlaceholderText("逗号分隔，例如：吃饭，周末")
+        box.addWidget(self.knowledgeTagsEdit)
+
+        box.addWidget(_label("正文", 13))
+        self.knowledgeContentEdit = PlainTextEdit()
+        self.knowledgeContentEdit.setPlaceholderText("写清楚事实本身，例如：不吃香菜，海鲜过敏")
+        self.knowledgeContentEdit.setFixedHeight(110)
+        box.addWidget(self.knowledgeContentEdit)
+
+        flag_row = QHBoxLayout()
+        self.knowledgeAlwaysCheck = CheckBox("常驻")
+        self.knowledgeAlwaysCheck.setToolTip("开启后每次分析都会带上这条")
+        flag_row.addWidget(self.knowledgeAlwaysCheck)
+        self.knowledgeEnabledCheck = CheckBox("启用")
+        self.knowledgeEnabledCheck.setChecked(True)
+        flag_row.addWidget(self.knowledgeEnabledCheck)
+        flag_row.addStretch(1)
+        box.addLayout(flag_row)
+
+        body.addWidget(editor)
+        self.knowledgeFeedback = _label("", 12, _GREEN)
+        self.knowledgeFeedback.hide()
+        body.addWidget(self.knowledgeFeedback)
+
+        actions = QHBoxLayout()
+        new_btn = PushButton("新建")
+        new_btn.clicked.connect(self._knowledge_new)
+        actions.addWidget(new_btn)
+        delete_btn = PushButton("删除当前")
+        delete_btn.clicked.connect(self._knowledge_delete)
+        actions.addWidget(delete_btn)
+        actions.addStretch(1)
+        save_btn = PrimaryPushButton("保存笔记")
+        save_btn.clicked.connect(self._knowledge_save)
+        actions.addWidget(save_btn)
+        body.addLayout(actions)
+        body.addStretch(1)
+        self._knowledge_id = None
+
+    def _refresh_knowledge(self, select_id=None):
+        items = knowledge.notes()
+        self.knowledgeList.blockSignals(True)
+        self.knowledgeList.clear()
+        self._knowledge_items = items
+        self.knowledgeList.addItems([
+            (("● " if n["enabled"] else "○ ") + (n["title"] or "（无标题）") + (" · 常驻" if n["always_on"] else ""))
+            for n in items
+        ])
+        self.knowledgeList.blockSignals(False)
+        if not items:
+            self._knowledge_new()
+            return
+        index = 0
+        if select_id:
+            index = next((i for i, n in enumerate(items) if n["id"] == select_id), 0)
+        self.knowledgeList.setCurrentIndex(index)
+        self._knowledge_selected(index)
+
+    def _knowledge_selected(self, index):
+        items = getattr(self, "_knowledge_items", [])
+        if not 0 <= index < len(items):
+            return
+        note = items[index]
+        self._knowledge_id = note["id"]
+        self.knowledgeTitleEdit.setText(note["title"])
+        self.knowledgeTagsEdit.setText("，".join(note["tags"]))
+        self.knowledgeContentEdit.setPlainText(note["content"])
+        self.knowledgeAlwaysCheck.setChecked(note["always_on"])
+        self.knowledgeEnabledCheck.setChecked(note["enabled"])
+
+    def _knowledge_new(self):
+        self._knowledge_id = None
+        self.knowledgeTitleEdit.clear()
+        self.knowledgeTagsEdit.clear()
+        self.knowledgeContentEdit.clear()
+        self.knowledgeAlwaysCheck.setChecked(False)
+        self.knowledgeEnabledCheck.setChecked(True)
+        self.knowledgeFeedback.hide()
+
+    def _knowledge_save(self):
+        raw_tags = self.knowledgeTagsEdit.text().replace("，", ",").replace("、", ",")
+        tags = [x.strip() for x in raw_tags.split(",") if x.strip()]
+        try:
+            note_id = knowledge.save_note(
+                self.knowledgeTitleEdit.text(),
+                self.knowledgeContentEdit.toPlainText(),
+                tags,
+                self.knowledgeAlwaysCheck.isChecked(),
+                self.knowledgeEnabledCheck.isChecked(),
+                self._knowledge_id,
+            )
+        except Exception as exc:
+            self.knowledgeFeedback.setText("保存失败：" + str(exc))
+            self.knowledgeFeedback.show()
+            return
+        self._refresh_knowledge(note_id)
+        self.knowledgeFeedback.setText("已保存")
+        self.knowledgeFeedback.show()
+
+    def _knowledge_delete(self):
+        if not self._knowledge_id:
+            return
+        knowledge.delete_note(self._knowledge_id)
+        self._refresh_knowledge()
+        self.knowledgeFeedback.setText("已删除")
+        self.knowledgeFeedback.show()
+
+    def open_knowledge(self):
+        self._refresh_knowledge()
+        self.pages.setCurrentWidget(self.knowledgePage)
+        self.settingsButton.setEnabled(True)
 
     def _build_settings(self):
         self.settingsPage, body = self._scroll_page()
@@ -1107,6 +1259,7 @@ class Overlay:
         custom_style = _STYLE_PRESETS[preset_index][1] is None
         self.profileStyleEdit.setText(style if custom_style else "")
         self.profileStyleEdit.setVisible(custom_style)
+        self.profileAliasesEdit.setPlainText("\n".join(profile.get("aliases", [])))
         self.profileNotesEdit.setPlainText(profile.get("notes", ""))
 
         if not chat:
@@ -1143,7 +1296,11 @@ class Overlay:
                 return
 
         try:
-            chat_profiles.save(chat, relationship, style, chat_type, self.profileNotesEdit.toPlainText().strip())
+            chat_profiles.save(
+                chat, relationship, style, chat_type,
+                self.profileNotesEdit.toPlainText().strip(),
+                self.profileAliasesEdit.toPlainText().splitlines(),
+            )
         except Exception:
             self._profile_feedback("保存失败，请检查程序目录是否可写。", error=True)
             return
@@ -1661,7 +1818,12 @@ class Overlay:
             self.replyBox.addWidget(card)
             self.cards.append(card)
         reply_to = result.get("reply_to")
-        self.insightTitle.setText(f"对话参考 · 回复给 {reply_to}" if reply_to else "对话参考")
+        context_bits = []
+        if reply_to:
+            context_bits.append(f"回复给 {reply_to}")
+        if result.get("knowledge_count"):
+            context_bits.append(f"知识库 {result['knowledge_count']} 条")
+        self.insightTitle.setText("对话参考" + (" · " + " · ".join(context_bits) if context_bits else ""))
         answers = result.get("answers") or {}
 
         def conf(name):
