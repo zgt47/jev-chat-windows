@@ -68,16 +68,9 @@ jobs:
           $size = (Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum
           Write-Host ("开发环境展开大小：{0:N1} MB" -f ($size / 1MB))
 
-      - name: 压缩开发环境
-        shell: pwsh
-        run: |
-          Compress-Archive -Path 'dist\JevChat-Windows-Dev' -DestinationPath 'JevChat-Windows-Dev.zip' -CompressionLevel Optimal
-          $zip = Get-Item 'JevChat-Windows-Dev.zip'
-          Write-Host ("压缩包大小：{0:N1} MB" -f ($zip.Length / 1MB))
-
       - name: 上传开发环境
         uses: actions/upload-artifact@v4
         with:
           name: JevChat-Windows-Dev
-          path: JevChat-Windows-Dev.zip
+          path: dist/JevChat-Windows-Dev/*
           if-no-files-found: error
