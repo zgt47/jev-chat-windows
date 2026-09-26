@@ -281,11 +281,17 @@ def build_state(messages: list, relationship: str, keep: int = 10,
     return {"chat": chat}
 
 
-def build_rank_question(candidates: list[str]) -> dict:
-    """Build the best_reply choice question. criteria values stay in original Chinese."""
+def build_rank_question(candidates: list[str], persona_hint: str = "") -> dict:
+    """Build the best_reply choice question；有个人 Skill 时也把“像不像本人”纳入排序。"""
     if not 2 <= len(candidates) <= 3:
         raise ValueError("build_rank_question expects 2 or 3 candidate replies")
     keys = ("reply_a", "reply_b", "reply_c")[:len(candidates)]
+    persona_rule = ""
+    if persona_hint.strip():
+        persona_rule = (
+            " Also prefer the candidate that best follows the user's own customer-service "
+            "persona and decision rules below, without inventing facts: " + persona_hint[:1800]
+        )
     return {
         "best_reply": {
             "type": "choice",
@@ -296,6 +302,7 @@ def build_rank_question(candidates: list[str]) -> dict:
                 "Penalize dismissive, over-promising, or off-topic replies. "
                 "If the facts are not yet confirmed, prefer the candidate that looks them up "
                 "instead of faking memory or a vague apology."
+                + persona_rule
             ),
             "criteria": {key: text for key, text in zip(keys, candidates)},
         }

@@ -33,6 +33,7 @@ def analyze(
     base_url: str | None = None,
     reply_to: str | None = None,
     style: str = "",
+    persona: str = "",
     thinking: bool = False,
     jev_provider: str = "openrouter",
     jev_model: str | None = None,
@@ -83,6 +84,7 @@ def analyze(
         keep=context,
         reply_to=reply_to,
         style=style,
+        persona=persona,
         thinking=thinking,
         guidance=guidance_text(answers) if judged else None,
     )
@@ -91,7 +93,7 @@ def analyze(
 
     questions = {} if judged else dict(JUDGE_QUESTIONS)
     if len(candidates) >= 2:
-        questions.update(build_rank_question(candidates))
+        questions.update(build_rank_question(candidates, persona))
 
     if questions:
         try:

@@ -13,7 +13,7 @@ import threading
 import traceback
 from collections import deque
 
-from app import chat_history, chat_profiles, knowledge, settings, update, worker
+from app import chat_history, chat_profiles, knowledge, persona_skill, settings, update, worker
 from app.capture import find_wechat_hwnd
 from app.fill import fill, send
 from app.overlay import Overlay
@@ -275,16 +275,19 @@ def analyze_bg(msgs, title, revision, reply_to=None):
             relationship += "\n知识库背景（只把它当事实，不要编造）：\n" + "\n".join(
                 f"- {n['title'] or '笔记'}：{n['content']}" for n in matched_notes
             )
+        persona = persona_skill.prompt_text()
         result = analyze(msgs, relationship, context=settings.context(),
                          model=settings.draft_model() or None,
                          provider=settings.draft_provider(),
                          base_url=settings.draft_base_url() or None,
                          reply_to=reply_to, style=profile["style"],
+                         persona=persona,
                          thinking=settings.thinking(),
                          jev_provider=settings.jev_provider(),
                          jev_model=settings.jev_model() or None,
                          jev_base_url=settings.jev_base_url() or None)
         result["knowledge_count"] = len(matched_notes)
+        result["persona_skill"] = bool(persona)
         results.put(("ok", result, title, revision))
     except Exception as e:
         results.put(("err", f"分析失败: {e}", title, revision))

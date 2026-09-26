@@ -158,8 +158,8 @@ def _line(m) -> str:
 def draft_candidates(messages: list, relationship: str, provider: str = "deepseek",
                      model: str | None = None, base_url: str | None = None,
                      timeout: float = 30, keep: int = 10,
-                     reply_to: str | None = None, style: str = "", thinking: bool = False,
-                     guidance: str | None = None) -> list[str]:
+                     reply_to: str | None = None, style: str = "", persona: str = "",
+                     thinking: bool = False, guidance: str | None = None) -> list[str]:
     """messages: [(from, text)] 或 [(from, text, name)]，from ∈ {her, me}，name = 群里的发言人；
     只看最近 keep 条。返回最多 3 条中文候选（过滤后可能是 0 条，调用方要处理）。
 
@@ -184,6 +184,12 @@ def draft_candidates(messages: list, relationship: str, provider: str = "deepsee
         user += "\n\n我平时是这么说话的（模仿用词、长短、标点习惯）：\n" + "\n".join(samples)
     if style.strip():
         user += f"\n\n我对自己口吻的描述：{style.strip()}"
+    if persona.strip():
+        user += (
+            "\n\n下面是我本人维护的「个人客服 Skill」。"
+            "它优先于普通风格预设，用来约束口吻和处理逻辑；"
+            "但不能据此编造聊天里没有的业务事实：\n" + persona.strip()
+        )
     if reply_to:
         user += f"\n\n这是群聊。你要回复的是「{reply_to}」的话，三条候选都对 TA 说，不要@别人。"
     if guidance and guidance.strip():
