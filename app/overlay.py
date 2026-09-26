@@ -649,12 +649,54 @@ class Overlay:
         body.addStretch(1)
 
     def _build_profile(self):
-        """会话关系独立页：只管理当前聊天对象，不混进全局设置。"""
-        self.profilePage, body = self._scroll_page()
+        """会话关系：固定顶部返回/保存，内容单独滚动。"""
+        self.profilePage = QWidget()
+        page = QVBoxLayout(self.profilePage)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
+
+        fixed_header = QWidget(self.profilePage)
+        fixed_header.setObjectName("profileFixedHeader")
+        fixed_header.setStyleSheet(
+            "QWidget#profileFixedHeader { background:#f5f7f6; border-bottom:1px solid #e1e7e3; }"
+        )
+        header_box = QVBoxLayout(fixed_header)
+        header_box.setContentsMargins(14, 9, 14, 8)
+        header_box.setSpacing(4)
+
         heading = QHBoxLayout()
+        heading.setSpacing(8)
         heading.addWidget(_tool(FIF.RETURN, "返回回复建议", self._back_home))
         heading.addWidget(_label("会话关系", 23, "#24382d", True), 1)
-        body.addLayout(heading)
+        self.profileSaveButton = PrimaryPushButton("保存当前会话")
+        self.profileSaveButton.clicked.connect(self._save_profile)
+        heading.addWidget(self.profileSaveButton)
+        header_box.addLayout(heading)
+
+        self.profileFeedback = _label("", 12, _GREEN)
+        self.profileFeedback.hide()
+        header_box.addWidget(self.profileFeedback)
+        page.addWidget(fixed_header)
+
+        scroll = ScrollArea(self.profilePage)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setAutoFillBackground(False)
+
+        content = QWidget()
+        content.setObjectName("profilePageContent")
+        content.setStyleSheet("QWidget#profilePageContent { background: transparent; }")
+        body = QVBoxLayout(content)
+        body.setContentsMargins(20, 12, 20, 12)
+        body.setSpacing(14)
+        scroll.setWidget(content)
+        page.addWidget(scroll, 1)
+
+        self.pages.addWidget(self.profilePage)
+        self._pageLayouts.append(body)
+
         body.addWidget(_label(
             "关系和说话风格按聊天对象分别保存，只影响当前会话。",
             13, _MUTED
@@ -736,27 +778,58 @@ class Overlay:
         box.addWidget(self._hint("只保存在本机；分析这个会话时会作为背景信息提供给 Jev 和起草模型。"))
 
         body.addWidget(profile)
-        self.profileFeedback = _label("", 13, _GREEN)
-        self.profileFeedback.hide()
-        body.addWidget(self.profileFeedback)
-
-        actions = QHBoxLayout()
-        back = PushButton("返回")
-        back.clicked.connect(self._back_home)
-        actions.addWidget(back)
-        actions.addStretch(1)
-        self.profileSaveButton = PrimaryPushButton("保存当前会话")
-        self.profileSaveButton.clicked.connect(self._save_profile)
-        actions.addWidget(self.profileSaveButton)
-        body.addLayout(actions)
+        body.addWidget(self._hint("修改后可随时使用顶部固定栏的「保存当前会话」。"))
         body.addStretch(1)
 
     def _build_knowledge(self):
-        self.knowledgePage, body = self._scroll_page()
+        """知识库：固定顶部返回/保存，笔记内容单独滚动。"""
+        self.knowledgePage = QWidget()
+        page = QVBoxLayout(self.knowledgePage)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
+
+        fixed_header = QWidget(self.knowledgePage)
+        fixed_header.setObjectName("knowledgeFixedHeader")
+        fixed_header.setStyleSheet(
+            "QWidget#knowledgeFixedHeader { background:#f5f7f6; border-bottom:1px solid #e1e7e3; }"
+        )
+        header_box = QVBoxLayout(fixed_header)
+        header_box.setContentsMargins(14, 9, 14, 8)
+        header_box.setSpacing(4)
+
         heading = QHBoxLayout()
+        heading.setSpacing(8)
         heading.addWidget(_tool(FIF.RETURN, "返回回复建议", self._back_home))
         heading.addWidget(_label("知识库", 23, "#24382d", True), 1)
-        body.addLayout(heading)
+        self.knowledgeSaveButton = PrimaryPushButton("保存笔记")
+        self.knowledgeSaveButton.clicked.connect(self._knowledge_save)
+        heading.addWidget(self.knowledgeSaveButton)
+        header_box.addLayout(heading)
+
+        self.knowledgeFeedback = _label("", 12, _GREEN)
+        self.knowledgeFeedback.hide()
+        header_box.addWidget(self.knowledgeFeedback)
+        page.addWidget(fixed_header)
+
+        scroll = ScrollArea(self.knowledgePage)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setAutoFillBackground(False)
+
+        content = QWidget()
+        content.setObjectName("knowledgePageContent")
+        content.setStyleSheet("QWidget#knowledgePageContent { background: transparent; }")
+        body = QVBoxLayout(content)
+        body.setContentsMargins(20, 12, 20, 12)
+        body.setSpacing(14)
+        scroll.setWidget(content)
+        page.addWidget(scroll, 1)
+
+        self.pages.addWidget(self.knowledgePage)
+        self._pageLayouts.append(body)
+
         body.addWidget(_label(
             "全部只保存在本机。常驻笔记每次都带；其它笔记在标题或标签命中会话标题/最近消息时带入，最多 5 条。",
             13, _MUTED
@@ -799,9 +872,6 @@ class Overlay:
         box.addLayout(flag_row)
 
         body.addWidget(editor)
-        self.knowledgeFeedback = _label("", 12, _GREEN)
-        self.knowledgeFeedback.hide()
-        body.addWidget(self.knowledgeFeedback)
 
         actions = QHBoxLayout()
         new_btn = PushButton("新建")
@@ -811,10 +881,8 @@ class Overlay:
         delete_btn.clicked.connect(self._knowledge_delete)
         actions.addWidget(delete_btn)
         actions.addStretch(1)
-        save_btn = PrimaryPushButton("保存笔记")
-        save_btn.clicked.connect(self._knowledge_save)
-        actions.addWidget(save_btn)
         body.addLayout(actions)
+        body.addWidget(self._hint("编辑完成后，可随时使用顶部固定栏的「保存笔记」。"))
         body.addStretch(1)
         self._knowledge_id = None
 
