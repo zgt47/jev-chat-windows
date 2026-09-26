@@ -36,6 +36,7 @@ _DEFAULT_RELATIONSHIP = "romantic partners"
 _DEFAULT_CONTEXT = 10
 _DEFAULT_JEV = "openrouter"
 _DEFAULT_DRAFT = "deepseek"
+_DEFAULT_ALWAYS_ON_TOP = True
 
 
 def _read(name: str, default=None):
@@ -116,6 +117,10 @@ def check_update() -> bool:
 
 def debug_view() -> bool:
     return bool(_read("debug_view", False))
+
+
+def always_on_top() -> bool:
+    return bool(_read("always_on_top", _DEFAULT_ALWAYS_ON_TOP))
 
 
 def _read_env(env_name: str) -> str:
@@ -204,6 +209,7 @@ def save(
     thinking_on: bool | None = None,
     check_update_on: bool | None = None,
     debug_view_on: bool | None = None,
+    always_on_top_on: bool | None = None,
 ) -> None:
     """保存设置。空 key = 保留原 key；模型和 Base URL 可以显式传空串清掉。"""
     jev = (
@@ -248,6 +254,7 @@ def save(
         "thinking": flag(thinking_on, thinking),
         "check_update": flag(check_update_on, check_update),
         "debug_view": flag(debug_view_on, debug_view),
+        "always_on_top": flag(always_on_top_on, always_on_top),
     }
 
     with open(_CONFIG, "w", encoding="utf-8") as f:

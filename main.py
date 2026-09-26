@@ -36,7 +36,9 @@ def chat_of(title):
 
 
 def target_of(title):
-    """这个会话现在的回复对象：用户挑过且人还在就用它，否则用最近说话的那个；单聊没有发言人 → None。"""
+    """这个会话现在的回复对象：私聊强制 None；群聊/自动识别才从发言人里选。"""
+    if chat_profiles.get(title).get("chat_type", "auto") == "private":
+        return None
     chat = chat_of(title)
     if chat["target"] in chat["senders"]:
         return chat["target"]

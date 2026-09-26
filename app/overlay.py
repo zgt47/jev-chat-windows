@@ -30,6 +30,15 @@ _RELATIONSHIPS = [
     ("恋人", "romantic partners"), ("朋友", "friends"), ("同事", "colleagues"),
     ("家人", "family"), ("自定义", None),
 ]
+_CHAT_TYPES = [
+    ("自动识别", "auto"), ("私聊", "private"), ("群聊", "group"),
+]
+_STYLE_PRESETS = [
+    ("自然克制", "正常、克制、短句、不装熟"),
+    ("简短直接", "简短直接，少解释，不硬接话，不主动延伸"),
+    ("轻松随意", "轻松随意，像正常聊天，不刻意热情，不装熟"),
+    ("自定义", None),
+]
 
 
 def _choice(answers, name):
@@ -214,7 +223,10 @@ class Overlay:
         self.win = _MainWindow(self._relayout)
         self.win.setObjectName("assistantWindow")
         self.win.setWindowTitle("JevChat-Windows")
-        self.win.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        flags = Qt.Window | Qt.FramelessWindowHint
+        if settings.always_on_top():
+            flags |= Qt.WindowStaysOnTopHint
+        self.win.setWindowFlags(flags)
         self.win.setStyleSheet(
             "QWidget#assistantWindow { background: #f5f7f6; border: 1px solid #dce3de; border-radius: 14px; }"
         )
@@ -224,6 +236,7 @@ class Overlay:
         outer.setContentsMargins(1, 1, 1, 1)
         outer.setSpacing(0)
         header = _TitleBar(self.win)
+        self.header = header
         title = QHBoxLayout(header)
         title.setContentsMargins(18, 12, 10, 10)
         title.setSpacing(8)
@@ -231,9 +244,7 @@ class Overlay:
         name.setFixedWidth(40)
         name.setAttribute(Qt.WA_TransparentForMouseEvents)
         title.addWidget(name)
-        self.subtitle = _label("JevChat-Windows", 12, _MUTED)
-        self.subtitle.setAttribute(Qt.WA_TransparentForMouseEvents)
-        title.addWidget(self.subtitle, 1)
+        title.addStretch(1)
         self.captureSwitch = SwitchButton(header)
         self.captureSwitch.setOnText("采集中")
         self.captureSwitch.setOffText("已暂停")
@@ -242,6 +253,19 @@ class Overlay:
         self.captureSwitch.setChecked(True)
         self.captureSwitch.checkedChanged.connect(self._capture_toggled)
         title.addWidget(self.captureSwitch)
+        self.topmostSwitch = SwitchButton(header)
+        self.topmostSwitch.setOnText("置顶")
+        self.topmostSwitch.setOffText("置顶")
+        self.topmostSwitch.setToolTip("开启时窗口始终在最前；关闭后按普通窗口显示")
+        self.topmostSwitch.setAccessibleName("窗口置顶")
+        self.topmostSwitch.setChecked(settings.always_on_top())
+        self.topmostSwitch.checkedChanged.connect(self._topmost_toggled)
+        title.addWidget(self.topmostSwitch)
+        self.expandButton = PushButton("展开", header)
+        self.expandButton.setToolTip("展开完整页面")
+        self.expandButton.clicked.connect(self._expand_page)
+        self.expandButton.hide()
+        title.addWidget(self.expandButton)
         self.settingsButton = _tool(FIF.SETTING, "全局设置", self.open_settings, header)
         title.addWidget(self.settingsButton)
         title.addWidget(_tool(FIF.REMOVE, "最小化", self.win.showMinimized, header))
@@ -271,15 +295,24 @@ class Overlay:
         self._build_profile()
         self._build_settings()
         self._refresh_profile_summary()
-        footer = QHBoxLayout()
+        self.footerBar = QWidget(self.win)
+        footer = QHBoxLayout(self.footerBar)
         footer.setContentsMargins(20, 9, 8, 8)
         footer.addWidget(_label(f"仅填入输入框 · 发送由你确认 · v{VERSION}", 11, _MUTED), 1)
+        self.collapseButton = PushButton("收起页面", self.footerBar)
+        self.collapseButton.setToolTip("收起后只保留顶部控制栏")
+        self.collapseButton.clicked.connect(self._collapse_page)
+        footer.addWidget(self.collapseButton)
         grip = QSizeGrip(self.win)
         grip.setFixedSize(16, 16)
         footer.addWidget(grip, 0, Qt.AlignBottom)
-        outer.addLayout(footer)
+        outer.addWidget(self.footerBar)
+        self._collapsed = False
+        self._expandedSize = None
+        self._updateWasVisible = False
         screen = self.app.primaryScreen().availableGeometry()
-        self.win.setMinimumHeight(min(360, screen.height() - 32))
+        self._normalMinHeight = min(360, screen.height() - 32)
+        self.win.setMinimumHeight(self._normalMinHeight)
         self.win.resize(min(440, screen.width() - 32), min(820, screen.height() - 48))
         self.win.move(screen.right() - self.win.width() - 20, screen.top() + 24)
         self._relayout(self.win.width(), self.win.height())  # resizeEvent 补不到构造时这一次
@@ -315,7 +348,6 @@ class Overlay:
 
     def _apply_compact(self, compact):
         """紧凑/常规两套间距和可见性；断点没变时不会被调用。"""
-        self.subtitle.setVisible(not compact)
         self.captureSwitch.setOnText("" if compact else "采集中")
         self.captureSwitch.setOffText("" if compact else "已暂停")
         for label in self._hintLabels:
@@ -514,14 +546,35 @@ class Overlay:
         )
         box.addWidget(self._hint("帮助助手把握对这个人的称呼、语气和回应分寸。"))
 
-        style_label = _label("说话风格（可选）", 13)
+        type_label = _label("会话类型", 13)
+        box.addWidget(type_label)
+        self.profileChatTypeBox = ComboBox()
+        self.profileChatTypeBox.setMinimumWidth(0)
+        self.profileChatTypeBox.addItems([name for name, value in _CHAT_TYPES])
+        self.profileChatTypeBox.setAccessibleName("当前会话类型")
+        self.profileChatTypeBox.setToolTip("自动识别不确定时，可以手动指定私聊或群聊")
+        type_label.setBuddy(self.profileChatTypeBox)
+        box.addWidget(self.profileChatTypeBox)
+        box.addWidget(self._hint("私聊会强制关闭群聊回复对象和 @；群聊会按群聊逻辑处理。"))
+
+        style_label = _label("回复风格", 13)
         box.addWidget(style_label)
+        style_tabs = QHBoxLayout()
+        style_tabs.setSpacing(6)
+        self.profileStyleButtons = []
+        for label, value in _STYLE_PRESETS:
+            button = PushButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked=False, v=value: self._style_tab_changed(v))
+            style_tabs.addWidget(button)
+            self.profileStyleButtons.append((button, value))
+        box.addLayout(style_tabs)
         self.profileStyleEdit = LineEdit()
         self.profileStyleEdit.setPlaceholderText("例如：话少、不用标点、偶尔用 doge、不说客套话")
-        self.profileStyleEdit.setAccessibleName("当前会话的说话风格")
-        style_label.setBuddy(self.profileStyleEdit)
+        self.profileStyleEdit.setAccessibleName("当前会话的自定义回复风格")
+        self.profileStyleEdit.hide()
         box.addWidget(self.profileStyleEdit)
-        box.addWidget(self._hint("只对这个聊天对象生效，不影响其他会话。"))
+        box.addWidget(self._hint("默认「自然克制」：正常、克制、短句、不装熟。也可以选其他风格或自定义。"))
 
         body.addWidget(profile)
         self.profileFeedback = _label("", 13, _GREEN)
@@ -907,7 +960,18 @@ class Overlay:
         custom = _RELATIONSHIPS[index][1] is None
         self.profileRelEdit.setText(relationship if custom else "")
         self.profileRelEdit.setVisible(custom)
-        self.profileStyleEdit.setText(profile["style"])
+
+        chat_type = profile.get("chat_type", "auto")
+        type_index = next((i for i, (_, value) in enumerate(_CHAT_TYPES) if value == chat_type), 0)
+        self.profileChatTypeBox.setCurrentIndex(type_index)
+
+        style = profile.get("style") or _STYLE_PRESETS[0][1]
+        preset_index = next((i for i, (_, value) in enumerate(_STYLE_PRESETS) if value == style), len(_STYLE_PRESETS) - 1)
+        for i, (button, value) in enumerate(self.profileStyleButtons):
+            button.setChecked(i == preset_index)
+        custom_style = _STYLE_PRESETS[preset_index][1] is None
+        self.profileStyleEdit.setText(style if custom_style else "")
+        self.profileStyleEdit.setVisible(custom_style)
 
         if not chat:
             state = "先切到一个聊天会话，再保存关系资料。"
@@ -933,16 +997,34 @@ class Overlay:
             self.profileRelEdit.setFocus()
             return
 
+        chat_type = _CHAT_TYPES[self.profileChatTypeBox.currentIndex()][1]
+        style = next((value for button, value in self.profileStyleButtons if button.isChecked()), _STYLE_PRESETS[0][1])
+        if style is None:
+            style = self.profileStyleEdit.text().strip()
+            if not style:
+                self._profile_feedback("自定义回复风格不能为空。", error=True)
+                self.profileStyleEdit.setFocus()
+                return
+
         try:
-            chat_profiles.save(chat, relationship, self.profileStyleEdit.text().strip())
+            chat_profiles.save(chat, relationship, style, chat_type)
         except Exception:
             self._profile_feedback("保存失败，请检查程序目录是否可写。", error=True)
             return
 
         self._load_profile()
         self._refresh_profile_summary()
+        self._render_targets()
         self._profile_feedback(f"已保存「{chat}」的会话关系。")
         self.set_status("会话关系已保存，将用于下一次回复", "success")
+
+    def _style_tab_changed(self, value):
+        """回复风格选项卡：预设直接用；选自定义才显示输入框。"""
+        for button, preset in self.profileStyleButtons:
+            button.setChecked(preset == value)
+        self.profileStyleEdit.setVisible(value is None)
+        if value is None:
+            self.profileStyleEdit.setFocus()
 
     def _profile_feedback(self, text, error=False):
         color = "#b44832" if error else _GREEN
@@ -961,8 +1043,9 @@ class Overlay:
         profile = chat_profiles.get(chat)
         relationship = profile["relationship"]
         name = next((label for label, value in _RELATIONSHIPS if value == relationship), relationship)
+        type_name = next((label for label, value in _CHAT_TYPES if value == profile.get("chat_type", "auto")), "自动识别")
         suffix = "" if profile["saved"] else " · 未单独设置"
-        self.profileSummary.setText(f"关系：{name}{suffix}")
+        self.profileSummary.setText(f"关系：{name} · {type_name}{suffix}")
 
     def open_profile(self):
         self._load_profile()
@@ -1060,6 +1143,46 @@ class Overlay:
             return
         self.app.clipboard().setText(self.cands[index])
         self.set_status("回复已复制，可粘贴并修改。", "success")
+
+    def _topmost_toggled(self, on):
+        """运行中切换是否始终置顶，并保存到全局设置。"""
+        settings.save(always_on_top_on=on)
+        pos = self.win.pos()
+        self.win.setWindowFlag(Qt.WindowStaysOnTopHint, bool(on))
+        self.win.show()
+        self.win.move(pos)
+
+    def _collapse_page(self):
+        """收起后只保留顶部控制栏；页面和底部都隐藏。"""
+        if self._collapsed:
+            return
+        self._collapsed = True
+        self._expandedSize = self.win.size()
+        self._updateWasVisible = self.updateBar.isVisible()
+        self.updateBar.hide()
+        self.pages.hide()
+        self.footerBar.hide()
+        self.expandButton.show()
+        self.win.setMinimumHeight(0)
+        self.win.setMaximumHeight(16777215)
+        height = max(52, self.header.sizeHint().height() + 2)
+        self.win.setFixedHeight(height)
+
+    def _expand_page(self):
+        """恢复收起前的窗口大小。"""
+        if not self._collapsed:
+            return
+        self._collapsed = False
+        self.win.setMinimumHeight(0)
+        self.win.setMaximumHeight(16777215)
+        self.pages.show()
+        self.footerBar.show()
+        if self._updateWasVisible:
+            self.updateBar.show()
+        self.expandButton.hide()
+        self.win.setMinimumHeight(self._normalMinHeight)
+        if self._expandedSize is not None:
+            self.win.resize(self._expandedSize)
 
     def _capture_toggled(self, on):
         """用户自己拨的开关：界面先改，再通知父进程去开/停采集。"""
@@ -1247,7 +1370,11 @@ class Overlay:
         """开关关着、或这个会话没有发言人（单聊），这一行就不出现。
         重填下拉框时屏蔽信号，别把自己的填充当成用户挑的。"""
         senders, current = self.targets.get(self._shown, ([], None))
-        visible = bool(senders) and settings.reply_target()
+        chat_type = chat_profiles.get(self._shown).get("chat_type", "auto")
+        if chat_type == "private":
+            visible = False
+        else:
+            visible = bool(senders) and settings.reply_target()
         self.targetRow.setVisible(visible)
         if not visible:
             return

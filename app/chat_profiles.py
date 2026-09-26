@@ -21,6 +21,9 @@ _ROOT = (
 _PATH = os.path.join(_ROOT, "chat_profiles.json")
 _LEGACY_CONFIG = os.path.join(_ROOT, "config.json")
 _DEFAULT_RELATIONSHIP = "friends"
+_DEFAULT_STYLE = "正常、克制、短句、不装熟"
+_DEFAULT_CHAT_TYPE = "auto"
+_CHAT_TYPES = {"auto", "private", "group"}
 
 
 def _load() -> dict:
@@ -46,7 +49,7 @@ def _legacy_default() -> tuple[str, str, bool]:
     if not isinstance(data, dict):
         return _DEFAULT_RELATIONSHIP, "", False
     relationship = str(data.get("relationship") or "").strip()
-    style = str(data.get("style") or "").strip()
+    style = str(data.get("style") or _DEFAULT_STYLE).strip()
     if relationship:
         return relationship, style, True
     return _DEFAULT_RELATIONSHIP, style, False
@@ -59,10 +62,14 @@ def get(chat: str) -> dict:
     item = data.get(chat) if chat else None
     if isinstance(item, dict):
         relationship = str(item.get("relationship") or _DEFAULT_RELATIONSHIP).strip()
-        style = str(item.get("style") or "").strip()
+        style = str(item.get("style") or _DEFAULT_STYLE).strip()
+        chat_type = str(item.get("chat_type") or _DEFAULT_CHAT_TYPE).strip()
+        if chat_type not in _CHAT_TYPES:
+            chat_type = _DEFAULT_CHAT_TYPE
         return {
             "relationship": relationship,
             "style": style,
+            "chat_type": chat_type,
             "saved": True,
             "legacy": False,
         }
@@ -70,7 +77,8 @@ def get(chat: str) -> dict:
     relationship, style, legacy = _legacy_default()
     return {
         "relationship": relationship,
-        "style": style,
+        "style": style or _DEFAULT_STYLE,
+        "chat_type": _DEFAULT_CHAT_TYPE,
         "saved": False,
         "legacy": legacy,
     }
@@ -84,19 +92,27 @@ def style(chat: str) -> str:
     return get(chat)["style"]
 
 
-def save(chat: str, relationship: str, style: str = "") -> None:
+def chat_type(chat: str) -> str:
+    return get(chat)["chat_type"]
+
+
+def save(chat: str, relationship: str, style: str = _DEFAULT_STYLE, chat_type: str = _DEFAULT_CHAT_TYPE) -> None:
     chat = str(chat or "").strip()
     relationship = str(relationship or "").strip()
-    style = str(style or "").strip()
+    style = str(style or _DEFAULT_STYLE).strip()
+    chat_type = str(chat_type or _DEFAULT_CHAT_TYPE).strip()
     if not chat:
         raise ValueError("尚未识别到会话")
     if not relationship:
         raise ValueError("关系不能为空")
+    if chat_type not in _CHAT_TYPES:
+        raise ValueError("会话类型无效")
 
     data = _load()
     data[chat] = {
         "relationship": relationship,
         "style": style,
+        "chat_type": chat_type,
     }
 
     tmp = _PATH + ".tmp"
