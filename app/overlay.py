@@ -1037,6 +1037,11 @@ class Overlay:
             return
         if not self._knowledge_id:
             return
+
+        title = self.knowledgeTitleEdit.text().strip() or "未命名知识"
+        if not self._confirm_delete("知识", title):
+            return
+
         knowledge.delete_note(self._knowledge_id)
         self._refresh_knowledge()
         self.knowledgeFeedback.setText("已删除")
@@ -1294,6 +1299,11 @@ class Overlay:
         skill_id = getattr(self, "_personaCurrentId", None)
         if not skill_id:
             return
+
+        name = self.personaNameEdit.text().strip() or "未命名人格"
+        if not self._confirm_delete("人格 Skill", name):
+            return
+
         try:
             persona_skill.delete(skill_id)
         except Exception as exc:
@@ -1302,7 +1312,7 @@ class Overlay:
         self._refresh_persona_list()
         self._refresh_profile_persona_options()
         self._refresh_persona_summary()
-        self._persona_feedback("已删除这个人格。")
+        self._persona_feedback("已删除")
 
     def _load_persona(self, skill_id=None):
         data = persona_skill.load(skill_id)
@@ -2391,6 +2401,21 @@ class Overlay:
             self._go_home()
         # saved / exit 都不继续刚才那个模块跳转。
         return False
+
+    def _confirm_delete(self, item_type, item_name):
+        """所有不可恢复删除统一走这里；默认按钮是取消，避免回车误删。"""
+        name = str(item_name or "").strip() or "未命名内容"
+        box = QMessageBox(self.win)
+        box.setWindowTitle("确认删除")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(f"确认删除“{name}”？")
+        box.setInformativeText(f"这条{item_type}删除后无法恢复。")
+        delete_btn = box.addButton("删除", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.setEscapeButton(cancel_btn)
+        box.exec()
+        return box.clickedButton() is delete_btn
 
     def _settings_feedback(self, text, error=False):
         color = "#b44832" if error else _GREEN
