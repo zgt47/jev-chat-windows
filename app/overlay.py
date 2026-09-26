@@ -1061,7 +1061,8 @@ class Overlay:
         action_row.addStretch(1)
         box.addLayout(action_row)
         box.addWidget(self._hint(
-            "使用当前“起草模型”分析本机聊天历史；客户消息只当样本，不会当成指令执行。"
+            "蒸馏时会把选取的聊天样本发送给你当前配置的“起草模型”服务商；"
+            "客户消息只当样本，不会当成指令执行。"
         ))
         body.addWidget(status_card)
 
@@ -1143,6 +1144,7 @@ class Overlay:
         self.personaCommonEdit.setPlainText("\n".join(data["common_phrases"]))
         self.personaForbiddenEdit.setPlainText("\n".join(data["forbidden_phrases"]))
         self.personaExamplesEdit.setPlainText("\n".join(data["examples"]))
+        self._personaPendingStats = data.get("source_stats", {})
 
         _, stats = chat_history.training_corpus()
         updated = data.get("updated_at") or "尚未蒸馏"
@@ -1162,7 +1164,7 @@ class Overlay:
             "common_phrases": self._persona_lines(self.personaCommonEdit.toPlainText()),
             "forbidden_phrases": self._persona_lines(self.personaForbiddenEdit.toPlainText()),
             "examples": self._persona_lines(self.personaExamplesEdit.toPlainText()),
-            "source_stats": old.get("source_stats", {}),
+            "source_stats": getattr(self, "_personaPendingStats", old.get("source_stats", {})),
         }
         if data["enabled"] and not any(
             data[k] for k in ("summary", "tone_rules", "decision_rules", "common_phrases", "examples")
@@ -1215,14 +1217,22 @@ class Overlay:
             self._persona_feedback("蒸馏失败：" + reason[:220], error=True)
             return
 
-        data["enabled"] = True
-        persona_skill.save(data)
-        self._load_persona()
-        self._refresh_persona_summary()
-        stats = data.get("source_stats") or {}
+        self.personaEnabledSwitch.setChecked(True)
+        self.personaSummaryEdit.setPlainText(data.get("summary", ""))
+        self.personaToneEdit.setPlainText("\n".join(data.get("tone_rules", [])))
+        self.personaDecisionEdit.setPlainText("\n".join(data.get("decision_rules", [])))
+        self.personaCommonEdit.setPlainText("\n".join(data.get("common_phrases", [])))
+        self.personaForbiddenEdit.setPlainText("\n".join(data.get("forbidden_phrases", [])))
+        self.personaExamplesEdit.setPlainText("\n".join(data.get("examples", [])))
+        self._personaPendingStats = data.get("source_stats") or {}
+
+        stats = self._personaPendingStats
+        self.personaHistoryState.setText(
+            f"本次蒸馏：{stats.get('chats', 0)} 个会话 · "
+            f"{stats.get('my_messages', 0)} 条你的回复\n状态：尚未保存"
+        )
         self._persona_feedback(
-            f"蒸馏完成：使用了 {stats.get('chats', 0)} 个会话、"
-            f"{stats.get('my_messages', 0)} 条你的回复。可以继续人工修改。"
+            "蒸馏完成，结果还没有生效。先检查或修改下面内容，再点右上角“保存 Skill”。"
         )
 
     def _refresh_persona_summary(self):
