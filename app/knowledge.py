@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""本地知识库：标题 / 内容 / 标签 / 常驻 / 启用。只存程序目录旁。"""
+"""本地知识库：知识名称 / 触发词 / 知识内容 / 使用方式 / 启用。只存程序目录旁。"""
 from __future__ import annotations
 
 import json
@@ -49,8 +49,12 @@ def save_note(title: str, content: str, tags: list[str], always_on: bool,
               enabled: bool, note_id: str | None = None) -> str:
     title = str(title or "").strip()
     content = str(content or "").strip()
-    if not title and not content:
-        raise ValueError("标题和正文不能都为空")
+    if not title:
+        raise ValueError("知识名称不能为空")
+    if not content:
+        raise ValueError("知识内容不能为空")
+    if not always_on and not tags:
+        raise ValueError("按触发词使用时至少填写一个触发词")
     note_id = str(note_id or uuid.uuid4().hex)
     items = notes()
     row = {
@@ -76,7 +80,7 @@ def delete_note(note_id: str) -> None:
 
 
 def match(chat: str, messages: list, limit: int = 5) -> list[dict]:
-    """常驻笔记必带；其它笔记的标题或标签命中会话标题/最近 6 条消息时带上。"""
+    """每次都使用的知识直接带入；其它知识仅在触发词命中会话标题/最近 6 条消息时带入。"""
     recent = []
     for item in list(messages)[-6:]:
         text = item.get("text") if isinstance(item, dict) else item[1]
@@ -86,8 +90,9 @@ def match(chat: str, messages: list, limit: int = 5) -> list[dict]:
     for note in notes():
         if not note["enabled"]:
             continue
-        keys = [note["title"]] + note["tags"]
-        matched = note["always_on"] or any(k and k.casefold() in hay for k in keys)
+        matched = note["always_on"] or any(
+            word and word.casefold() in hay for word in note["tags"]
+        )
         if matched:
             hit.append(note)
         if len(hit) >= max(1, int(limit)):

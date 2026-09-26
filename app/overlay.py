@@ -21,7 +21,6 @@ from qfluentwidgets import (
 
 from app import chat_history, chat_profiles, knowledge, persona_skill, settings
 from app.services.edit_guard import EditGuard
-from app.version import VERSION
 from core import jev_client, llm, providers
 from core.questions import CHOICE_LABELS
 
@@ -29,8 +28,8 @@ _LOG_LINES = 300
 _MUTED = "#68776f"
 _GREEN = "#18794e"
 _RELATIONSHIPS = [
-    ("恋人", "romantic partners"), ("朋友", "friends"), ("同事", "colleagues"),
-    ("家人", "family"), ("自定义", None),
+    ("朋友", "friends"), ("同事", "colleagues"), ("家人", "family"),
+    ("恋人", "romantic partners"), ("自定义", None),
 ]
 _CHAT_TYPES = [
     ("自动识别", "auto"), ("私聊", "private"), ("群聊", "group"),
@@ -440,8 +439,8 @@ class Overlay:
         self._refresh_persona_summary()
         self.footerBar = QWidget(self.win)
         footer = QHBoxLayout(self.footerBar)
-        footer.setContentsMargins(20, 9, 8, 8)
-        footer.addWidget(_label(f"自动发送可选 · v{VERSION}", 11, _MUTED), 1)
+        footer.setContentsMargins(8, 4, 8, 6)
+        footer.addStretch(1)
         grip = QSizeGrip(self.win)
         grip.setFixedSize(16, 16)
         footer.addWidget(grip, 0, Qt.AlignBottom)
@@ -791,7 +790,7 @@ class Overlay:
         persona_label.setBuddy(self.profilePersonaBox)
         box.addWidget(self.profilePersonaBox)
         box.addWidget(self._hint(
-            "可给不同会话指定不同人格；「跟随默认」会使用人格库里的默认人格，「不使用人格」则完全关闭人格规则。"
+            "每个会话单独选择人格。未选择时不使用人格；你保存的人格都会列在这里。"
         ))
 
         alias_label = _label("别名（可选，每行一个）", 13)
@@ -811,7 +810,6 @@ class Overlay:
         box.addWidget(self._hint("只保存在本机；分析这个会话时会作为背景信息提供给 Jev 和起草模型。"))
 
         body.addWidget(profile)
-        body.addWidget(self._hint("修改后可随时使用顶部固定栏的「保存当前会话」。"))
         body.addStretch(1)
 
     def _build_knowledge(self):
@@ -864,7 +862,8 @@ class Overlay:
         self._pageLayouts.append(body)
 
         body.addWidget(_label(
-            "全部只保存在本机。常驻笔记每次都带；其它笔记在标题或标签命中会话标题/最近消息时带入，最多 5 条。",
+            "知识库用来保存模型需要知道的固定事实。按触发词命中后，系统只把「知识内容」带进当前分析；"
+            "也可以设为每次对话都使用。",
             13, _MUTED
         ))
 
@@ -873,32 +872,41 @@ class Overlay:
         box.setContentsMargins(16, 16, 16, 18)
         box.setSpacing(10)
 
-        box.addWidget(_label("已有笔记", 13))
+        box.addWidget(_label("已保存知识", 13))
         self.knowledgeList = ComboBox()
         self.knowledgeList.currentIndexChanged.connect(self._knowledge_selected)
         box.addWidget(self.knowledgeList)
 
-        box.addWidget(_label("标题", 13))
+        box.addWidget(_label("知识名称", 13))
         self.knowledgeTitleEdit = LineEdit()
-        self.knowledgeTitleEdit.setPlaceholderText("例如：口味忌口")
+        self.knowledgeTitleEdit.setPlaceholderText("例如：退换货规则")
         box.addWidget(self.knowledgeTitleEdit)
 
-        box.addWidget(_label("标签", 13))
+        box.addWidget(_label("使用方式", 13))
+        self.knowledgeScopeBox = ComboBox()
+        self.knowledgeScopeBox.addItems(["按触发词使用", "每次对话都使用"])
+        self.knowledgeScopeBox.currentIndexChanged.connect(self._knowledge_scope_changed)
+        box.addWidget(self.knowledgeScopeBox)
+        box.addWidget(self._hint(
+            "按触发词：聊天对象名称或最近消息出现触发词时使用；每次对话：所有会话都会带入。"
+        ))
+
+        self.knowledgeTriggersLabel = _label("触发词", 13)
+        box.addWidget(self.knowledgeTriggersLabel)
         self.knowledgeTagsEdit = LineEdit()
-        self.knowledgeTagsEdit.setPlaceholderText("逗号分隔，例如：吃饭，周末")
+        self.knowledgeTagsEdit.setPlaceholderText("例如：退款，退货，七天无理由")
         box.addWidget(self.knowledgeTagsEdit)
 
-        box.addWidget(_label("正文", 13))
+        box.addWidget(_label("知识内容", 13))
         self.knowledgeContentEdit = PlainTextEdit()
-        self.knowledgeContentEdit.setPlaceholderText("写清楚事实本身，例如：不吃香菜，海鲜过敏")
-        self.knowledgeContentEdit.setFixedHeight(110)
+        self.knowledgeContentEdit.setPlaceholderText(
+            "例如：未拆封商品支持7天无理由退货；已拆封需要人工确认。"
+        )
+        self.knowledgeContentEdit.setFixedHeight(120)
         box.addWidget(self.knowledgeContentEdit)
 
         flag_row = QHBoxLayout()
-        self.knowledgeAlwaysCheck = CheckBox("常驻")
-        self.knowledgeAlwaysCheck.setToolTip("开启后每次分析都会带上这条")
-        flag_row.addWidget(self.knowledgeAlwaysCheck)
-        self.knowledgeEnabledCheck = CheckBox("启用")
+        self.knowledgeEnabledCheck = CheckBox("启用这条知识")
         self.knowledgeEnabledCheck.setChecked(True)
         flag_row.addWidget(self.knowledgeEnabledCheck)
         flag_row.addStretch(1)
@@ -915,7 +923,6 @@ class Overlay:
         actions.addWidget(delete_btn)
         actions.addStretch(1)
         body.addLayout(actions)
-        body.addWidget(self._hint("编辑完成后，可随时使用顶部固定栏的「保存笔记」。"))
         body.addStretch(1)
         self._knowledge_id = None
 
@@ -925,7 +932,8 @@ class Overlay:
         self.knowledgeList.clear()
         self._knowledge_items = items
         self.knowledgeList.addItems([
-            (("● " if n["enabled"] else "○ ") + (n["title"] or "（无标题）") + (" · 常驻" if n["always_on"] else ""))
+            (("● " if n["enabled"] else "○ ") + (n["title"] or "（未命名）") +
+             (" · 每次使用" if n["always_on"] else ""))
             for n in items
         ])
         self.knowledgeList.blockSignals(False)
@@ -952,10 +960,11 @@ class Overlay:
         note = items[index]
         self._knowledge_id = note["id"]
         self.knowledgeTitleEdit.setText(note["title"])
+        self.knowledgeScopeBox.setCurrentIndex(1 if note["always_on"] else 0)
         self.knowledgeTagsEdit.setText("，".join(note["tags"]))
         self.knowledgeContentEdit.setPlainText(note["content"])
-        self.knowledgeAlwaysCheck.setChecked(note["always_on"])
         self.knowledgeEnabledCheck.setChecked(note["enabled"])
+        self._knowledge_scope_changed(self.knowledgeScopeBox.currentIndex())
         self._knowledgeSelectedIndex = index
         self._mark_edit_clean(self.knowledgePage)
 
@@ -965,23 +974,49 @@ class Overlay:
             return
         self._knowledge_id = None
         self.knowledgeTitleEdit.clear()
+        self.knowledgeScopeBox.setCurrentIndex(0)
         self.knowledgeTagsEdit.clear()
         self.knowledgeContentEdit.clear()
-        self.knowledgeAlwaysCheck.setChecked(False)
         self.knowledgeEnabledCheck.setChecked(True)
+        self._knowledge_scope_changed(0)
         self.knowledgeFeedback.hide()
         self._knowledgeSelectedIndex = -1
         self._mark_edit_clean(self.knowledgePage)
 
+    def _knowledge_scope_changed(self, index):
+        by_trigger = index == 0
+        self.knowledgeTriggersLabel.setVisible(by_trigger)
+        self.knowledgeTagsEdit.setVisible(by_trigger)
+
     def _knowledge_save(self):
+        title = self.knowledgeTitleEdit.text().strip()
+        content = self.knowledgeContentEdit.toPlainText().strip()
         raw_tags = self.knowledgeTagsEdit.text().replace("，", ",").replace("、", ",")
         tags = [x.strip() for x in raw_tags.split(",") if x.strip()]
+        always_on = self.knowledgeScopeBox.currentIndex() == 1
+
+        if not title:
+            self.knowledgeFeedback.setText("请填写知识名称")
+            self.knowledgeFeedback.show()
+            self.knowledgeTitleEdit.setFocus()
+            return
+        if not content:
+            self.knowledgeFeedback.setText("请填写知识内容")
+            self.knowledgeFeedback.show()
+            self.knowledgeContentEdit.setFocus()
+            return
+        if not always_on and not tags:
+            self.knowledgeFeedback.setText("请填写触发词，或者把使用方式改成「每次对话都使用」")
+            self.knowledgeFeedback.show()
+            self.knowledgeTagsEdit.setFocus()
+            return
+
         try:
             note_id = knowledge.save_note(
-                self.knowledgeTitleEdit.text(),
-                self.knowledgeContentEdit.toPlainText(),
+                title,
+                content,
                 tags,
-                self.knowledgeAlwaysCheck.isChecked(),
+                always_on,
                 self.knowledgeEnabledCheck.isChecked(),
                 self._knowledge_id,
             )
@@ -1082,12 +1117,8 @@ class Overlay:
         self.personaDeleteButton = PushButton("删除当前")
         self.personaDeleteButton.clicked.connect(self._persona_delete)
         manage_row.addWidget(self.personaDeleteButton)
-        self.personaDefaultButton = PushButton("设为默认")
-        self.personaDefaultButton.clicked.connect(self._persona_set_default)
-        manage_row.addWidget(self.personaDefaultButton)
         manage_row.addStretch(1)
         box.addLayout(manage_row)
-        box.addWidget(self._hint("★ 表示默认人格；会话设为「跟随默认人格」时会使用它。"))
 
         box.addWidget(_label("Skill 名称", 13))
         self.personaNameEdit = LineEdit()
@@ -1192,15 +1223,12 @@ class Overlay:
 
     def _refresh_persona_list(self, select_id=None):
         skills = persona_skill.list_skills()
-        default_id = persona_skill.default_id()
         self._personaListIds = [x["id"] for x in skills]
 
         self.personaListBox.blockSignals(True)
         self.personaListBox.clear()
         self.personaListBox.addItems([
-            ("★ " if x["id"] == default_id else "") +
-            x["name"] +
-            ("" if x.get("enabled") else "（已停用）")
+            x["name"] + ("" if x.get("enabled") else "（已停用）")
             for x in skills
         ])
         self.personaListBox.blockSignals(False)
@@ -1209,7 +1237,7 @@ class Overlay:
             self._persona_new()
             return
 
-        target = select_id or default_id or skills[0]["id"]
+        target = select_id or skills[0]["id"]
         try:
             index = self._personaListIds.index(target)
         except ValueError:
@@ -1251,7 +1279,6 @@ class Overlay:
         self.personaExtraEdit.clear()
         self.personaHistoryState.setText("新人格 · 尚未保存")
         self.personaDeleteButton.setEnabled(False)
-        self.personaDefaultButton.setEnabled(False)
         self.personaFeedback.hide()
         self.personaNameEdit.setFocus()
         self._personaSelectedIndex = -1
@@ -1274,24 +1301,6 @@ class Overlay:
         self._refresh_persona_summary()
         self._persona_feedback("已删除这个人格。")
 
-    def _persona_set_default(self):
-        if self._has_unsaved_changes(self.personaPage):
-            self._ask_unsaved(self.personaPage)
-            return
-        skill_id = getattr(self, "_personaCurrentId", None)
-        if not skill_id:
-            self._persona_feedback("先保存这个人格，再设为默认。", error=True)
-            return
-        try:
-            persona_skill.set_default(skill_id)
-        except Exception as exc:
-            self._persona_feedback("设置默认失败：" + str(exc), error=True)
-            return
-        self._refresh_persona_list(skill_id)
-        self._refresh_profile_persona_options()
-        self._refresh_persona_summary()
-        self._persona_feedback("已设为默认人格。")
-
     def _load_persona(self, skill_id=None):
         data = persona_skill.load(skill_id)
         self._personaCurrentId = data.get("id") or None
@@ -1308,13 +1317,11 @@ class Overlay:
 
         _, stats = chat_history.training_corpus()
         updated = data.get("updated_at") or "尚未更新"
-        default_text = " · 当前默认" if data.get("id") and data.get("id") == persona_skill.default_id() else ""
         self.personaHistoryState.setText(
             f"本地历史：{stats['chats']} 个会话 · {stats['messages']} 条消息 · "
-            f"{stats['my_messages']} 条我的回复\nSkill 更新：{updated}{default_text}"
+            f"{stats['my_messages']} 条我的回复\nSkill 更新：{updated}"
         )
         self.personaDeleteButton.setEnabled(bool(data.get("id")))
-        self.personaDefaultButton.setEnabled(bool(data.get("id")) and data.get("id") != persona_skill.default_id())
         self.personaFeedback.hide()
         try:
             self._personaSelectedIndex = self._personaListIds.index(data.get("id"))
@@ -1456,9 +1463,8 @@ class Overlay:
             label = "不使用人格" if persona_id == persona_skill.NO_PERSONA else "未启用"
             self.personaSummary.setText(f"人格 Skill：{label}")
             return
-        default_mark = " · 默认" if data.get("id") == persona_skill.default_id() else ""
         self.personaSummary.setText(
-            f"{data.get('name', '人格 Skill')}：已启用{default_mark} · "
+            f"{data.get('name', '人格 Skill')}：已启用 · "
             f"口吻 {len(data['tone_rules'])} · 逻辑 {len(data['decision_rules'])}"
         )
 
@@ -1670,7 +1676,6 @@ class Overlay:
         ))
         body.addWidget(models)
 
-        body.addWidget(self._hint("修改完成后，可随时使用顶部固定栏的「保存全局设置」。"))
         body.addStretch(1)
         self._load_settings()
 
@@ -2009,12 +2014,19 @@ class Overlay:
             self._empty_text()
             self.set_status("设置已就绪，等待新消息", "idle")
 
-    def _refresh_profile_persona_options(self, selected="__default__"):
+    def _refresh_profile_persona_options(self, selected=None):
         skills = persona_skill.list_skills()
-        self._profilePersonaIds = [persona_skill.DEFAULT_PERSONA, persona_skill.NO_PERSONA] + [
-            x["id"] for x in skills
-        ]
-        labels = ["跟随默认人格", "不使用人格"] + [
+        skill_ids = [x["id"] for x in skills]
+
+        # 旧版曾自动保存“跟随默认人格”；升级后把它解析为当时的具体人格，
+        # 不再让以后修改默认人格时把所有客户一起带着变。
+        if selected == persona_skill.DEFAULT_PERSONA:
+            old_default = persona_skill.default_id()
+            selected = old_default if old_default in skill_ids else persona_skill.NO_PERSONA
+        selected = selected or persona_skill.NO_PERSONA
+
+        self._profilePersonaIds = [persona_skill.NO_PERSONA] + skill_ids
+        labels = ["不使用人格"] + [
             x["name"] + ("" if x.get("enabled") else "（已停用）") for x in skills
         ]
         self.profilePersonaBox.blockSignals(True)
@@ -2063,7 +2075,7 @@ class Overlay:
         self.profileStyleDescription.setText(
             _STYLE_DESCRIPTIONS.get(_STYLE_PRESETS[preset_index][1], "")
         )
-        self._refresh_profile_persona_options(profile.get("persona_id", persona_skill.DEFAULT_PERSONA))
+        self._refresh_profile_persona_options(profile.get("persona_id", persona_skill.NO_PERSONA))
         self.profileAliasesEdit.setPlainText("\n".join(profile.get("aliases", [])))
         self.profileNotesEdit.setPlainText(profile.get("notes", ""))
 
@@ -2225,9 +2237,9 @@ class Overlay:
             return (
                 self._knowledge_id,
                 self.knowledgeTitleEdit.text(),
+                self.knowledgeScopeBox.currentIndex(),
                 self.knowledgeTagsEdit.text(),
                 self.knowledgeContentEdit.toPlainText(),
-                self.knowledgeAlwaysCheck.isChecked(),
                 self.knowledgeEnabledCheck.isChecked(),
             )
 
