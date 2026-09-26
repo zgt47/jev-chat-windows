@@ -1785,9 +1785,13 @@ class Overlay:
             provider = self._provider_of(group)
             name = group.table[provider].name
             configured = bool(group.stored_key())
-            group.keyState.setText("已配置" if configured else "未配置")
-            group.keyEdit.setPlaceholderText(
-                "已配置，留空保留" if configured else f"输入 {name} API 密钥")
+            if group.kind == "jev" and configured and not settings.jev_key_matches_provider():
+                group.keyState.setText("来源已更换")
+                group.keyEdit.setPlaceholderText(f"请重新输入 {name} API 密钥")
+            else:
+                group.keyState.setText("已配置" if configured else "未配置")
+                group.keyEdit.setPlaceholderText(
+                    "已配置，留空保留" if configured else f"输入 {name} API 密钥")
             if self._compact:
                 name = group.providerBox.fontMetrics().elidedText(name, Qt.ElideRight, 180)
             group.providerBox.setText(name)
@@ -2008,10 +2012,20 @@ class Overlay:
             self._settings_feedback("保存失败，请检查配置文件是否可写后重试。", error=True)
             return
 
+        # 保存后立即从磁盘回读校验，防止来源字段写错却直到下次重启才暴露。
+        if settings.jev_provider() != jev_provider:
+            self._settings_feedback(
+                f"保存异常：判断来源没有正确保存（当前读回 {settings.jev_provider()}）。",
+                error=True,
+            )
+            return
+
         self._load_settings()
         self._apply_transparency()
         self._render_targets()
-        self._settings_feedback("全局设置已保存，将用于下一次回复。")
+        self._settings_feedback(
+            f"已保存 · 判断来源：{providers.JEV_PROVIDERS[jev_provider].name}"
+        )
         self.setupButton.hide()
         if not self.cands and not self._busy:
             self._empty_text()

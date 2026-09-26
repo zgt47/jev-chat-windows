@@ -36,6 +36,27 @@ _DEFAULT_RELATIONSHIP = "romantic partners"
 _DEFAULT_CONTEXT = 10
 _DEFAULT_JEV = "openrouter"
 _DEFAULT_DRAFT = "deepseek"
+
+# 旧开发版曾用过不同的内部值；读取时统一迁移，避免重启后被当成无效配置
+# 而静默回退到 OpenRouter。
+_JEV_PROVIDER_ALIASES = {
+    "siliconflow": "siliconflow_jev",
+    "SiliconFlow": "siliconflow_jev",
+    "硅基流动": "siliconflow_jev",
+    "硅基流动 System One": "siliconflow_jev",
+    "opencode_zen": "zen",
+    "OpenCode Zen": "zen",
+    "TypeSafe": "typesafe",
+    "TypeSafe 直连": "typesafe",
+}
+
+
+def _normalize_jev_provider(value) -> str:
+    raw = str(value or "").strip()
+    if raw in JEV_PROVIDERS:
+        return raw
+    return _JEV_PROVIDER_ALIASES.get(raw, "")
+
 _DEFAULT_ALWAYS_ON_TOP = True
 _DEFAULT_AUTO_ANALYZE = True
 _DEFAULT_AUTO_SEND = False
@@ -71,8 +92,23 @@ def style() -> str:
 
 
 def jev_provider() -> str:
-    v = _read("jev_provider")
-    return v if v in JEV_PROVIDERS else _DEFAULT_JEV
+    raw = _read("jev_provider")
+    provider = _normalize_jev_provider(raw)
+    if provider:
+        return provider
+
+    # 如果旧配置里来源字段丢了/改名了，用模型名做一次保守恢复。
+    # 例如 diffusiongemma / Kev-4b / SemIf 只属于硅基流动判断源，
+    # 不能因为字段不认识就拿同一把 key 去请求 OpenRouter。
+    model = str(_read("jev_model") or "").strip()
+    owners = [
+        key for key, spec in JEV_PROVIDERS.items()
+        if model and spec.models and model in spec.models
+    ]
+    if len(owners) == 1:
+        return owners[0]
+
+    return _DEFAULT_JEV
 
 
 def jev_model() -> str:
@@ -278,6 +314,16 @@ def jev_key() -> str:
     return _get_key(JEV_ENV)
 
 
+def jev_key_provider() -> str:
+    """这把判断 key 最后一次明确保存时对应的来源。旧配置没有该字段时返回空。"""
+    return _normalize_jev_provider(_read("jev_key_provider"))
+
+
+def jev_key_matches_provider() -> bool:
+    tagged = jev_key_provider()
+    return not tagged or tagged == jev_provider()
+
+
 def has_jev_key() -> bool:
     return bool(jev_key())
 
@@ -320,11 +366,8 @@ def save(
     history_limit_n: int | None = None,
 ) -> None:
     """保存设置。空 key = 保留原 key；模型和 Base URL 可以显式传空串清掉。"""
-    jev = (
-        jev_provider_text
-        if jev_provider_text in JEV_PROVIDERS
-        else jev_provider()
-    )
+    requested_jev = _normalize_jev_provider(jev_provider_text)
+    jev = requested_jev or jev_provider()
     draft = (
         draft_provider_text
         if draft_provider_text in DRAFT_PROVIDERS
@@ -353,11 +396,19 @@ def save(
     send_delay = auto_send_delay() if auto_send_delay_n is None else max(1, min(10, int(auto_send_delay_n)))
     wl = whitelist() if whitelist_items is None else [str(x).strip() for x in whitelist_items if str(x).strip()]
 
+    # 只有用户这次明确输入了判断 key，才更新“这把 key 属于哪个来源”。
+    # 留空=保留旧 key，同时保留它原来的来源标签。
+    key_provider = (
+        jev if jev_key_text and str(jev_key_text).strip()
+        else _normalize_jev_provider(_read("jev_key_provider"))
+    )
+
     data = {
         "relationship": relationship_text or relationship(),
         "context": n,
         "style": keep(style_text, "style"),
         "jev_provider": jev,
+        "jev_key_provider": key_provider,
         "jev_model": keep(jev_model_text, "jev_model"),
         "jev_base_url": keep(jev_base_url_text, "jev_base_url"),
         "draft_provider": draft,

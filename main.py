@@ -270,6 +270,12 @@ def start_analyze(title, msgs):
     if not settings.has_jev_key():
         ov.set_status("请先在设置中配置模型", "warning")
         return
+    if not settings.jev_key_matches_provider():
+        ov.set_status(
+            "判断来源已更换，但当前密钥属于另一个来源；请到全局设置重新填写判断密钥并保存。",
+            "warning",
+        )
+        return
     if not settings.has_llm_key():
         ov.set_status(f"起草来源 {settings.draft_provider_name()} 没填密钥，去设置里补上", "warning")
         return
