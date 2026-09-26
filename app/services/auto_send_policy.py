@@ -60,10 +60,13 @@ def evaluate(
     danger = (answers.get("danger_level") or {}).get("score")
     best_choice = (answers.get("best_reply") or {}).get("choice")
 
+    errors = result.get("analysis_errors") or []
     if not isinstance(danger, (int, float)):
-        return AutoSendPlan.block("自动发送未执行：没有完成危险度判断，需要人工确认。")
+        detail = errors[0] if errors else "没有完成危险度判断"
+        return AutoSendPlan.block(f"自动发送未执行：{detail}。")
     if best_choice not in ("reply_a", "reply_b", "reply_c"):
-        return AutoSendPlan.block("自动发送未执行：没有完成候选排序，需要人工确认。")
+        detail = next((x for x in errors if x.startswith("排序失败：")), "没有完成候选排序")
+        return AutoSendPlan.block(f"自动发送未执行：{detail}。")
     if danger >= 6:
         return AutoSendPlan.block(
             f"自动发送已暂停：当前危险度 {danger:.0f}/9，需要人工确认。"

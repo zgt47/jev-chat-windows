@@ -20,6 +20,7 @@ def analyze_conversation(title: str, messages: list, reply_to: str | None = None
     result = run_engine(
         messages,
         ctx["relationship"],
+        judge_relationship=ctx["judge_relationship"],
         context=settings.context(),
         model=settings.draft_model() or None,
         provider=settings.draft_provider(),

@@ -3131,14 +3131,21 @@ class Overlay:
         resolved = (answers.get("tension_resolved") or {}).get("noul")
         if isinstance(resolved, (int, float)) and 0 <= resolved <= 1:
             extra.append(("紧张已缓解" if resolved >= 0.5 else "紧张未缓解") + f" · {round((resolved if resolved >= 0.5 else 1-resolved) * 100)}%")
+        errors = result.get("analysis_errors") or []
+        if errors:
+            extra.append(errors[0])
         self.judgmentExtra.setText("  ·  ".join(extra))
+        self.judgmentExtra.setToolTip("\n".join(errors) if errors else "")
 
         danger = answers.get("danger_level") or {}
         score = danger.get("score")
         dconf = danger.get("confidence")
         valid_score = isinstance(score, (int, float)) and isfinite(score) and 0 <= score <= 9
         dconf_text = f" · 把握 {round(dconf * 100)}%" if isinstance(dconf, (int, float)) and 0 <= dconf <= 1 else ""
-        self.tension.setText(f"危险 {score:.0f}/9{dconf_text}" if valid_score else "危险度待判断")
+        self.tension.setText(
+            f"危险 {score:.0f}/9{dconf_text}"
+            if valid_score else ("判断失败" if errors else "危险度待判断")
+        )
         color = "#996819" if valid_score and score >= 3 else _MUTED
         if valid_score and score >= 6:
             color = "#b44832"

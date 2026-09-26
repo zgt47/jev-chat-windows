@@ -13,18 +13,22 @@ def build(title: str, messages: list) -> dict:
 
     返回稳定字段：
     - profile: 当前会话资料
-    - relationship: 已合并联系人备注 / 知识库的关系背景
+    - judge_relationship: 判断层只使用关系 + 联系人备注
+    - relationship: 起草层使用关系 + 联系人备注 + 命中的知识库
     - style: 当前会话回复风格
     - persona_id / persona / persona_name: 人格选择和提示文本
     - knowledge_count: 本轮实际命中的知识库条数
     """
     profile = chat_profiles.get(title)
 
-    relationship = str(profile.get("relationship") or "").strip()
+    judge_relationship = str(profile.get("relationship") or "").strip()
     notes = str(profile.get("notes") or "").strip()
     if notes:
-        relationship += "\n联系人备注：" + notes
+        judge_relationship += "\n联系人备注：" + notes
 
+    # 产品知识只给起草层。意图 / 危险度判断只需要关系和真实聊天，
+    # 不应该被大量商品资料、规则文档挤占判断上下文。
+    relationship = judge_relationship
     matched_notes = knowledge.match(title, messages)
     if matched_notes:
         relationship += "\n知识库背景（只把它当事实，不要编造）：\n" + "\n".join(
@@ -37,6 +41,7 @@ def build(title: str, messages: list) -> dict:
 
     return {
         "profile": profile,
+        "judge_relationship": judge_relationship,
         "relationship": relationship,
         "style": str(profile.get("style") or ""),
         "persona_id": persona_id,

@@ -26,6 +26,7 @@ def _add_usage(total: dict, one: dict | None) -> None:
 def analyze(
     messages: list,
     relationship: str,
+    judge_relationship: str | None = None,
     model: str | None = None,
     timeout: float = 30,
     context: int = 10,
@@ -54,9 +55,15 @@ def analyze(
     - 第二次判断/排序失败：照样返回已经生成的候选，只是不做有效排序；
     - 起草本身失败或候选被过滤光：才真正失败。
     """
-    state = build_state(messages, relationship, keep=context, reply_to=reply_to)
+    state = build_state(
+        messages,
+        judge_relationship if judge_relationship is not None else relationship,
+        keep=context,
+        reply_to=reply_to,
+    )
     usage: dict = {}
     answers: dict = {}
+    analysis_errors: list[str] = []
     judged = False
 
     try:
@@ -71,8 +78,8 @@ def analyze(
         answers = first.get("answers") or {}
         _add_usage(usage, first.get("usage"))
         judged = True
-    except JevError:
-        pass
+    except JevError as exc:
+        analysis_errors.append("判断失败：" + str(exc))
 
     candidates = draft_candidates(
         messages,
@@ -105,8 +112,9 @@ def analyze(
                 model=jev_model,
                 base_url=jev_base_url,
             )
-        except JevError:
+        except JevError as exc:
             second = {}
+            analysis_errors.append("排序失败：" + str(exc))
         answers = {**answers, **(second.get("answers") or {})}
         _add_usage(usage, second.get("usage"))
 
@@ -134,6 +142,7 @@ def analyze(
         "answers": answers,
         "usage": usage,
         "reply_to": reply_to,
+        "analysis_errors": analysis_errors,
     }
 
 
