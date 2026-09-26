@@ -151,21 +151,10 @@ def chat_allowed(title: str) -> bool:
 def transparency() -> int:
     """界面透明度：0=完全不透明，40=最多 40% 透明。
 
-    兼容上一版 overlay_opacity（60..100，不透明度）：
-    例如旧值 96 会迁移成透明度 4。
+    新版不继承旧的“不透明度”设置，避免升级后界面一启动就过于透明。
     """
-    raw = _read("overlay_transparency", None)
-    if raw is None:
-        legacy = _read("overlay_opacity", None)
-        if legacy is not None:
-            try:
-                raw = 100 - int(legacy)
-            except (TypeError, ValueError):
-                raw = _DEFAULT_TRANSPARENCY
-        else:
-            raw = _DEFAULT_TRANSPARENCY
     try:
-        n = int(raw)
+        n = int(_read("overlay_transparency", _DEFAULT_TRANSPARENCY))
     except (TypeError, ValueError):
         n = _DEFAULT_TRANSPARENCY
     return max(0, min(40, n))
