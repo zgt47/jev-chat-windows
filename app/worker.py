@@ -72,7 +72,9 @@ def run(q, hwnd, enabled, debug_on):
                     warned = False
                     cap.area = area  # 采集线程拿它做 diff
                     x0, y0, x1, y1, bg, y_pane = area
-                    rect = (x0, y0, x1, y1)
+                    # area 额外带上 WGC 实际帧宽高，父进程可把截图坐标安全映射到
+                    # Windows 窗口坐标；避免高 DPI 下直接把两套坐标相加。
+                    rect = (x0, y0, x1, y1, full.shape[1], full.shape[0])
                     if rect != last_area:
                         q.put(("area", rect))
                         last_area = rect
