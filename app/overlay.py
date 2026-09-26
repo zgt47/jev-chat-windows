@@ -936,14 +936,17 @@ class Overlay:
              (" · 每次使用" if n["always_on"] else ""))
             for n in items
         ])
-        self.knowledgeList.blockSignals(False)
         if not items:
+            self.knowledgeList.blockSignals(False)
             self._knowledge_new()
             return
         index = 0
         if select_id:
             index = next((i for i, n in enumerate(items) if n["id"] == select_id), 0)
+        # 程序主动刷新列表时不能触发 currentIndexChanged，
+        # 否则会被“未保存修改”保护当成用户切换，和保存流程互相递归。
         self.knowledgeList.setCurrentIndex(index)
+        self.knowledgeList.blockSignals(False)
         self._knowledge_selected(index)
 
     def _knowledge_selected(self, index):
@@ -2298,7 +2301,7 @@ class Overlay:
             self._refresh_persona_list(current)
 
     def _save_current_editor(self, page=None):
-        """保存当前编辑页。保存失败时页面仍保持脏状态。"""
+        """保存当前编辑页；只有保存后确实变成干净状态才返回 True。"""
         page = page or self.pages.currentWidget()
         if page == getattr(self, "settingsPage", None):
             self._save()
@@ -2308,6 +2311,9 @@ class Overlay:
             self._knowledge_save()
         elif page == getattr(self, "personaPage", None):
             self._save_persona()
+        else:
+            return True
+        return not self._has_unsaved_changes(page)
 
     def _ask_unsaved(self, page=None):
         """只提供“保存 / 退出”两个选择。
@@ -2340,6 +2346,8 @@ class Overlay:
             box.exec()
 
             if box.clickedButton() is save_btn:
+                # “保存”只在真实写盘成功后成立。缺字段、目录不可写等失败情况
+                # 保持当前编辑内容，不把它误判成已保存。
                 self._save_current_editor(page)
                 return "saved"
 
