@@ -2,9 +2,9 @@
 """把候选填进微信输入框；自动客服模式下可发送。
 
 安全原则：
-- 不移动系统鼠标；
-- 不使用 mouse_event 真点桌面；
-- 点击只通过 Windows 消息投递给“微信窗口本身”；
+- 新版微信需要真实前台点击才能聚焦输入框；
+- 每次点击前先验证目标屏幕点的根窗口确实是微信；
+- 任何遮挡、越界或坐标异常都直接取消，不允许点到其它程序；
 - WGC 截图坐标先按实际帧尺寸映射到窗口坐标，高 DPI 不再靠猜缩放倍数。
 """
 import ctypes
@@ -32,6 +32,10 @@ u32.ChildWindowFromPointEx.argtypes = [ctypes.c_void_p, w.POINT, ctypes.c_uint]
 u32.ChildWindowFromPointEx.restype = ctypes.c_void_p
 u32.ScreenToClient.argtypes = [ctypes.c_void_p, ctypes.POINTER(w.POINT)]
 u32.ScreenToClient.restype = ctypes.c_bool
+u32.WindowFromPoint.argtypes = [w.POINT]
+u32.WindowFromPoint.restype = ctypes.c_void_p
+u32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+u32.GetAncestor.restype = ctypes.c_void_p
 
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
@@ -40,6 +44,7 @@ SMTO_ABORTIFHUNG = 0x0002
 CWP_SKIPINVISIBLE = 0x0001
 CWP_SKIPDISABLED = 0x0002
 CWP_SKIPTRANSPARENT = 0x0004
+GA_ROOT = 2
 
 
 def _window_rect(hwnd):
@@ -138,27 +143,33 @@ def _target_child(hwnd, sx, sy):
     return target, pt.x, pt.y
 
 
-def _direct_click(hwnd, sx, sy):
-    """只给微信 HWND/子控件投递一次左键消息，不移动真实鼠标。"""
+def _physical_click_wechat(hwnd, sx, sy):
+    """受限前台点击：只有屏幕上这个点实际属于微信时才允许点。
+
+    新版微信的输入编辑器不是普通 Win32 子控件，不响应后台 WM_LBUTTONDOWN，
+    所以聚焦输入框必须走真实前台点击。但这里先做 WindowFromPoint 根窗口校验，
+    若 Jev、聊天列表之外的窗口或其它程序挡在这个点上，就直接拒绝执行。
+    """
     r = _window_rect(hwnd)
     if not (r.left <= sx < r.right and r.top <= sy < r.bottom):
         raise RuntimeError("点击点超出微信窗口，已取消操作")
 
-    target, cx, cy = _target_child(hwnd, sx, sy)
-    lparam = (int(cx) & 0xFFFF) | ((int(cy) & 0xFFFF) << 16)
-    result = ctypes.c_size_t()
+    probe = w.POINT(int(sx), int(sy))
+    hit = u32.WindowFromPoint(probe)
+    root = u32.GetAncestor(hit, GA_ROOT) if hit else None
+    if not root or int(root) != int(hwnd):
+        raise RuntimeError("目标位置当前不是微信窗口，已取消操作")
 
-    ok = u32.SendMessageTimeoutW(
-        target, WM_LBUTTONDOWN, MK_LBUTTON, lparam,
-        SMTO_ABORTIFHUNG, 800, ctypes.byref(result),
-    )
-    if not ok:
-        raise RuntimeError("微信输入控件无响应，已取消操作")
-
-    u32.SendMessageTimeoutW(
-        target, WM_LBUTTONUP, 0, lparam,
-        SMTO_ABORTIFHUNG, 800, ctypes.byref(result),
-    )
+    old = w.POINT()
+    u32.GetCursorPos(ctypes.byref(old))
+    try:
+        u32.SetCursorPos(int(sx), int(sy))
+        time.sleep(0.025)
+        u32.mouse_event(0x2, 0, 0, 0, 0)
+        u32.mouse_event(0x4, 0, 0, 0, 0)
+        time.sleep(0.025)
+    finally:
+        u32.SetCursorPos(old.x, old.y)
 
 
 def _ctrl_key(vk):
@@ -209,7 +220,7 @@ def fill(hwnd, area, text):
     sx, sy = _frame_to_screen(r, frame_w, frame_h, fx, fy)
 
     _foreground(hwnd)
-    _direct_click(hwnd, sx, sy)
+    _physical_click_wechat(hwnd, sx, sy)
     time.sleep(0.05)
 
     if u32.GetForegroundWindow() != hwnd:
@@ -241,4 +252,4 @@ def send(hwnd, area):
 
     sx, sy = _frame_to_screen(r, frame_w, frame_h, fx, fy)
     _foreground(hwnd)
-    _direct_click(hwnd, sx, sy)
+    _physical_click_wechat(hwnd, sx, sy)
