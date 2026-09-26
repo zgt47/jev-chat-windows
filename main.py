@@ -244,7 +244,7 @@ def on_toggle_capture(on):
         try:
             state["hwnd"] = find_wechat_hwnd()
         except RuntimeError:
-            ov.set_capture(False, "未找到聊天窗口，打开后再开启采集")
+            ov.set_capture(False, "未找到聊天窗口，请先打开微信", state="disconnected")
             return
         child = spawn_worker()
     capture_on.set()
@@ -356,10 +356,10 @@ def drain():
             ov.log(msg[1])
             continue
         if kind == "paused":  # 子进程确认已暂停
-            ov.set_capture(False)
+            ov.set_capture(False, state="off")
             continue
         if kind == "resumed":  # 子进程重新开始采集
-            ov.set_capture(True)
+            ov.set_capture(True, state="active")
             continue
         if kind == "dead":  # 采集彻底停了（微信关了之类），这才是真的要清状态
             state["area"] = None
@@ -368,7 +368,7 @@ def drain():
             state["rerun"] = None
             ov.invalidate_replies()
             ov.set_busy(False)
-            ov.set_capture(False, msg[1])
+            ov.set_capture(False, msg[1], state="disconnected")
             ov.log(msg[1])
             if child is not None:  # 子进程已经不干活了，收掉引用，下次打开开关重开一个
                 child.terminate()

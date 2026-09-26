@@ -347,6 +347,7 @@ class Overlay:
         self.cards = []
         self._busy = False
         self._current = False
+        self._captureState = "active"  # active / disconnected / off
         self._compact = None  # 断点模式：None 保证 _relayout 第一次调用必定生效
         self._pageLayouts = []
         self._hintLabels = []
@@ -391,9 +392,9 @@ class Overlay:
         title.addStretch(1)
         self.captureSwitch = SwitchButton(header)
         self.captureSwitch.setOnText("采集中")
-        self.captureSwitch.setOffText("已暂停")
-        self.captureSwitch.setToolTip("开启或暂停采集")
-        self.captureSwitch.setAccessibleName("开启或暂停采集")
+        self.captureSwitch.setOffText("未连接")
+        self.captureSwitch.setToolTip("开启或关闭聊天采集；未连接时开启会重新查找聊天窗口")
+        self.captureSwitch.setAccessibleName("聊天采集开关")
         self.captureSwitch.setChecked(True)
         self.captureSwitch.checkedChanged.connect(self._capture_toggled)
         title.addWidget(self.captureSwitch)
@@ -492,8 +493,7 @@ class Overlay:
 
     def _apply_compact(self, compact):
         """紧凑/常规两套间距和可见性；断点没变时不会被调用。"""
-        self.captureSwitch.setOnText("" if compact else "采集中")
-        self.captureSwitch.setOffText("" if compact else "已暂停")
+        self._sync_capture_label()
         for label in self._hintLabels:
             label.setVisible(not compact)
         self.referenceNote.setVisible(bool(self.cands) and not compact)
@@ -2808,10 +2808,23 @@ class Overlay:
         self.app.quit()
 
     def _capture_toggled(self, on):
-        """用户自己拨的开关：界面先改，再通知父进程去开/停采集。"""
-        self._capture_text(on)
+        """用户自己拨开关：关=已关闭；开=尝试采集，失败时父进程会回报未连接。"""
+        self._captureState = "active" if on else "off"
+        self._sync_capture_label()
+        self._capture_text(on, state=self._captureState)
         if self.on_toggle_capture:
             self.on_toggle_capture(on)
+
+    def _sync_capture_label(self):
+        """标题栏只显示用户能理解的实际状态。"""
+        compact = bool(self._compact)
+        self.captureSwitch.setOnText("" if compact else "采集中")
+        if compact:
+            self.captureSwitch.setOffText("")
+            return
+        self.captureSwitch.setOffText(
+            "未连接" if self._captureState == "disconnected" else "已关闭"
+        )
 
     def set_update(self, latest, url):
         """main.py 后台线程查到比当前新的版本才会调这个。只显示版本号和 Release 链接，别的什么都没有。"""
@@ -2819,27 +2832,41 @@ class Overlay:
         self.updateLink.setUrl(url)
         self.updateBar.show()
 
-    def set_capture(self, on, reason=""):
-        """父进程回报的状态：只改界面，不回调（不然和父进程来回打架）。reason 为空用默认说明。"""
+    def set_capture(self, on, reason="", state=None):
+        """父进程回报实际采集状态；state: active / disconnected / off。"""
+        if state is None:
+            state = "active" if on else ("disconnected" if reason else "off")
+        self._captureState = state
         self.captureSwitch.blockSignals(True)
         self.captureSwitch.setChecked(on)
         self.captureSwitch.blockSignals(False)
-        self._capture_text(on, reason)
+        self._sync_capture_label()
+        self._capture_text(on, reason, state)
 
-    def _capture_text(self, on, reason=""):
-        """开关状态对应的状态行和空态文案。已有的候选不受影响，暂停了照样能填入/复制。"""
+    def _capture_text(self, on, reason="", state=None):
+        """状态行和空态文案区分“未连接”与“用户关闭”。"""
         configured = settings.has_key()
-        if not on:
-            self.set_status(reason or "采集已暂停，聊天内容不再读取", "warning")
+        state = state or ("active" if on else self._captureState)
+
+        if state == "disconnected":
+            self.set_status(reason or "未连接到聊天窗口", "warning")
+        elif state == "off":
+            self.set_status(reason or "聊天采集已关闭", "idle")
         elif configured:
             self.set_status("等待新消息", "idle")
         else:
             self.set_status("请先在设置中配置模型", "warning")
-        if self._busy or self.cands:  # 正在生成或已有候选时，空态卡片本来就看不见
+
+        if self._busy or self.cands:
             return
-        if not on:
-            self.emptyTitle.setText("采集已暂停")
-            self.emptyHint.setText("聊天内容暂时不再读取。\n打开标题栏的开关，继续接收新消息。")
+
+        if state == "disconnected":
+            self.emptyTitle.setText("尚未连接聊天窗口")
+            self.emptyHint.setText("打开微信聊天窗口后，点顶部采集开关重新连接。")
+            self.setupButton.setVisible(not configured)
+        elif state == "off":
+            self.emptyTitle.setText("聊天采集已关闭")
+            self.emptyHint.setText("需要读取新消息时，再打开顶部采集开关。")
             self.setupButton.setVisible(not configured)
         else:
             self._empty_text()
