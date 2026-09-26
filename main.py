@@ -158,8 +158,17 @@ def queue_auto_send(title, result, revision):
         ov.set_status("自动发送未执行：群聊默认需要人工确认。", "warning")
         return
 
-    danger = ((result.get("answers") or {}).get("danger_level") or {}).get("score")
-    if isinstance(danger, (int, float)) and danger >= 6:
+    answers = result.get("answers") or {}
+    danger = (answers.get("danger_level") or {}).get("score")
+    best_choice = (answers.get("best_reply") or {}).get("choice")
+
+    if not isinstance(danger, (int, float)):
+        ov.set_status("自动发送未执行：Jev 没有完成危险度判断，需要人工确认。", "warning")
+        return
+    if best_choice not in ("reply_a", "reply_b", "reply_c"):
+        ov.set_status("自动发送未执行：Jev 没有完成候选排序，需要人工确认。", "warning")
+        return
+    if danger >= 6:
         ov.set_status(f"自动发送已暂停：当前危险度 {danger:.0f}/9，需要人工确认。", "warning")
         return
 
