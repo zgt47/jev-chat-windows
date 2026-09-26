@@ -47,6 +47,19 @@ CWP_SKIPTRANSPARENT = 0x0004
 GA_ROOT = 2
 
 
+def _window_pid(hwnd) -> int:
+    pid = ctypes.c_ulong()
+    u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
+def _window_dpi(hwnd) -> int:
+    try:
+        return int(u32.GetDpiForWindow(hwnd))
+    except Exception:
+        return 96
+
+
 def _window_rect(hwnd):
     """窗口扩展边界；与 WGC 捕获窗口尽量使用同一外框。"""
     r = w.RECT()
@@ -157,8 +170,18 @@ def _physical_click_wechat(hwnd, sx, sy):
     probe = w.POINT(int(sx), int(sy))
     hit = u32.WindowFromPoint(probe)
     root = u32.GetAncestor(hit, GA_ROOT) if hit else None
-    if not root or int(root) != int(hwnd):
-        raise RuntimeError("目标位置当前不是微信窗口，已取消操作")
+
+    target_pid = _window_pid(hwnd)
+    hit_pid = _window_pid(hit) if hit else 0
+    root_pid = _window_pid(root) if root else 0
+
+    # 某些微信版本把输入区拆成独立渲染顶层窗，根 HWND 不一定等于主窗口。
+    # 只要目标点仍属于同一个微信进程，就允许点击；其它程序一律拒绝。
+    if not hit or not target_pid or (hit_pid != target_pid and root_pid != target_pid):
+        raise RuntimeError(
+            "目标位置不是微信进程，已取消操作"
+            f"（点={int(sx)},{int(sy)}；微信PID={target_pid}；命中PID={hit_pid}/{root_pid}）"
+        )
 
     old = w.POINT()
     u32.GetCursorPos(ctypes.byref(old))
@@ -178,6 +201,37 @@ def _ctrl_key(vk):
     u32.keybd_event(vk, 0, 0, 0)
     u32.keybd_event(vk, 0, 2, 0)
     u32.keybd_event(0x11, 0, 2, 0)
+
+
+def diagnostics(hwnd, area) -> str:
+    """输出两台电脑间最关键的输入定位差异。"""
+    try:
+        r, x0, y0, x1, y1, frame_w, frame_h = _frame_geometry(hwnd, area)
+        pane_w = x1 - x0
+        input_h = frame_h - y1
+
+        fill_fx = x0 + max(36, min(round(pane_w * 0.12), 120))
+        fill_fy = y1 + max(34, min(round(input_h * 0.30), 90))
+        fill_sx, fill_sy = _frame_to_screen(r, frame_w, frame_h, fill_fx, fill_fy)
+
+        right_margin = max(42, min(round(input_h * 0.37), 140))
+        bottom_margin = max(26, min(round(input_h * 0.23), 90))
+        send_fx = x1 - right_margin
+        send_fy = frame_h - bottom_margin
+        send_sx, send_sy = _frame_to_screen(r, frame_w, frame_h, send_fx, send_fy)
+
+        return (
+            f"DPI={_window_dpi(hwnd)} "
+            f"窗口={r.right-r.left}x{r.bottom-r.top} "
+            f"WGC={frame_w}x{frame_h} "
+            f"消息区=({x0},{y0})-({x1},{y1}) "
+            f"输入高={input_h} "
+            f"填入点={fill_sx},{fill_sy} "
+            f"发送点={send_sx},{send_sy} "
+            f"微信PID={_window_pid(hwnd)}"
+        )
+    except Exception as exc:
+        return f"诊断失败：{type(exc).__name__}: {exc}"
 
 
 def set_clipboard(text):
