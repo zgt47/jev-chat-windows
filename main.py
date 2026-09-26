@@ -14,12 +14,11 @@ import traceback
 from collections import deque
 
 from app import chat_history, chat_profiles, settings, update, worker
-from app.services import auto_send_policy, context_service
+from app.services import analysis_service, auto_send_policy
 from app.capture import find_wechat_hwnd
 from app.fill import fill, send
 from app.overlay import Overlay
 from app.version import VERSION
-from core.engine import analyze
 
 # {会话名: {history, result, rev, target, senders}}：每个会话各自的上下文、上次结果和版本号，互不串味
 # history 里是 [(who, text, name)]，engine 只认 her/me，name 是群里的发言人（单聊/自己说的是 None）；
@@ -252,27 +251,9 @@ def on_toggle_capture(on):
 
 
 def analyze_bg(msgs, title, revision, reply_to=None):
-    """后台线程只跑网络调用，结果丢队列；UI 只在主线程的 tick 里动（Qt 不能跨线程碰）。"""
+    """后台线程只调用应用分析服务；Qt 主线程只负责收结果和更新界面。"""
     try:
-        ctx = context_service.build(title, msgs)
-        result = analyze(
-            msgs,
-            ctx["relationship"],
-            context=settings.context(),
-            model=settings.draft_model() or None,
-            provider=settings.draft_provider(),
-            base_url=settings.draft_base_url() or None,
-            reply_to=reply_to,
-            style=ctx["style"],
-            persona=ctx["persona"],
-            thinking=settings.thinking(),
-            jev_provider=settings.jev_provider(),
-            jev_model=settings.jev_model() or None,
-            jev_base_url=settings.jev_base_url() or None,
-        )
-        result["knowledge_count"] = ctx["knowledge_count"]
-        result["persona_skill"] = bool(ctx["persona"])
-        result["persona_name"] = ctx["persona_name"]
+        result = analysis_service.analyze_conversation(title, msgs, reply_to)
         results.put(("ok", result, title, revision))
     except Exception as e:
         results.put(("err", f"分析失败: {e}", title, revision))
