@@ -2595,6 +2595,8 @@ class Overlay:
             context_bits.append(f"回复给 {reply_to}")
         if result.get("knowledge_count"):
             context_bits.append(f"知识库 {result['knowledge_count']} 条")
+        if result.get("persona_skill"):
+            context_bits.append("个人 Skill")
         self.insightTitle.setText("对话参考" + (" · " + " · ".join(context_bits) if context_bits else ""))
         answers = result.get("answers") or {}
 
