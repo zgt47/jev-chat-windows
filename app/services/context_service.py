@@ -31,7 +31,7 @@ def build(title: str, messages: list) -> dict:
             f"- {note['content']}" for note in matched_notes
         )
 
-    persona_id = profile.get("persona_id", persona_skill.DEFAULT_PERSONA)
+    persona_id = profile.get("persona_id", persona_skill.NO_PERSONA)
     persona_data = persona_skill.effective(persona_id)
     persona = persona_skill.prompt_text(persona_id)
 

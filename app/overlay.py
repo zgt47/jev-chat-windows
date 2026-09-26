@@ -2117,7 +2117,7 @@ class Overlay:
         persona_id = (
             self._profilePersonaIds[persona_index]
             if 0 <= persona_index < len(getattr(self, "_profilePersonaIds", []))
-            else persona_skill.DEFAULT_PERSONA
+            else persona_skill.NO_PERSONA
         )
 
         try:
