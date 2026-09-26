@@ -46,7 +46,7 @@ jobs:
           Copy-Item 'app' $out -Recurse -Force
           Copy-Item 'core' $out -Recurse -Force
           Copy-Item 'requirements.txt','LICENSE','NOTICE','DEV使用说明.md' $out -Force
-          Copy-Item 'dev\更新开发源码.ps1','dev\更新开发源码.cmd' $out -Force
+          Copy-Item 'dev\更新开发源码.cmd','dev\dev_update.ps1' $out -Force
 
           $size = (Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum
           Write-Host ("开发环境展开大小：{0:N1} MB" -f ($size / 1MB))
