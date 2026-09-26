@@ -13,7 +13,8 @@ import threading
 import traceback
 from collections import deque
 
-from app import chat_history, chat_profiles, knowledge, persona_skill, settings, update, worker
+from app import chat_history, chat_profiles, settings, update, worker
+from app.services import auto_send_policy, context_service
 from app.capture import find_wechat_hwnd
 from app.fill import fill, send
 from app.overlay import Overlay
@@ -142,41 +143,23 @@ def fill_reply(text):
 
 
 def queue_auto_send(title, result, revision):
-    """客服模式自动发送：只排队，不在模型结果刚回来的一瞬间直接发。"""
-    if not settings.auto_send():
-        return
-    if title != state["chat"] or title != ov.current_chat():
-        return
-
+    """客服模式：把是否能自动发送交给独立策略模块判断。"""
     chat = chat_of(title)
-    if not chat["history"] or chat["history"][-1][0] != "her":
+    plan = auto_send_policy.evaluate(
+        enabled=settings.auto_send(),
+        title=title,
+        active_title=state["chat"],
+        visible_title=ov.current_chat(),
+        chat_state=chat,
+        profile=chat_profiles.get(title),
+        result=result,
+    )
+    if not plan.allowed:
+        if plan.status:
+            ov.set_status(plan.status, plan.status_kind)
         return
 
-    # 群聊默认不自动发送，避免误 @ / 误回复多人会话。
-    profile = chat_profiles.get(title)
-    if profile.get("chat_type") == "group" or chat.get("senders"):
-        ov.set_status("自动发送未执行：群聊默认需要人工确认。", "warning")
-        return
-
-    answers = result.get("answers") or {}
-    danger = (answers.get("danger_level") or {}).get("score")
-    best_choice = (answers.get("best_reply") or {}).get("choice")
-
-    if not isinstance(danger, (int, float)):
-        ov.set_status("自动发送未执行：Jev 没有完成危险度判断，需要人工确认。", "warning")
-        return
-    if best_choice not in ("reply_a", "reply_b", "reply_c"):
-        ov.set_status("自动发送未执行：Jev 没有完成候选排序，需要人工确认。", "warning")
-        return
-    if danger >= 6:
-        ov.set_status(f"自动发送已暂停：当前危险度 {danger:.0f}/9，需要人工确认。", "warning")
-        return
-
-    text = str(result.get("best_reply") or "").strip()
-    if not text:
-        return
-
-    token = (title, revision, text)
+    token = (title, revision, plan.text)
     state["pending_send"] = token
     delay = settings.auto_send_delay()
     ov.set_status(f"客服自动发送：{delay} 秒后发送推荐回复；新消息到来会自动取消。", "warning")
@@ -184,22 +167,27 @@ def queue_auto_send(title, result, revision):
 
 
 def perform_auto_send(token):
-    """延迟结束后再次核对会话、版本和开关，任何变化都取消。"""
+    """延迟结束后再次核对；具体有效性规则由独立策略模块负责。"""
     if state.get("pending_send") != token:
         return
     state["pending_send"] = None
 
     title, revision, text = token
-    if not settings.auto_send():
-        return
-    if title != state["chat"] or title != ov.current_chat():
-        return
-    if chat_of(title)["rev"] != revision:
-        return
-    if not chat_of(title)["history"] or chat_of(title)["history"][-1][0] != "her":
-        return
-    if state["hwnd"] is None or state["area"] is None:
-        ov.set_status("自动发送取消：当前聊天窗口不可用。", "warning")
+    chat = chat_of(title)
+    plan = auto_send_policy.still_valid(
+        enabled=settings.auto_send(),
+        title=title,
+        active_title=state["chat"],
+        visible_title=ov.current_chat(),
+        revision=revision,
+        current_revision=chat["rev"],
+        history=chat["history"],
+        hwnd_available=state["hwnd"] is not None,
+        area_available=state["area"] is not None,
+    )
+    if not plan.allowed:
+        if plan.status:
+            ov.set_status(plan.status, plan.status_kind)
         return
 
     try:
@@ -266,31 +254,25 @@ def on_toggle_capture(on):
 def analyze_bg(msgs, title, revision, reply_to=None):
     """后台线程只跑网络调用，结果丢队列；UI 只在主线程的 tick 里动（Qt 不能跨线程碰）。"""
     try:
-        profile = chat_profiles.get(title)
-        relationship = profile["relationship"]
-        if profile.get("notes"):
-            relationship += "\n联系人备注：" + profile["notes"]
-        matched_notes = knowledge.match(title, msgs)
-        if matched_notes:
-            relationship += "\n知识库背景（只把它当事实，不要编造）：\n" + "\n".join(
-                f"- {n['title'] or '笔记'}：{n['content']}" for n in matched_notes
-            )
-        persona_id = profile.get("persona_id", persona_skill.DEFAULT_PERSONA)
-        persona_data = persona_skill.effective(persona_id)
-        persona = persona_skill.prompt_text(persona_id)
-        result = analyze(msgs, relationship, context=settings.context(),
-                         model=settings.draft_model() or None,
-                         provider=settings.draft_provider(),
-                         base_url=settings.draft_base_url() or None,
-                         reply_to=reply_to, style=profile["style"],
-                         persona=persona,
-                         thinking=settings.thinking(),
-                         jev_provider=settings.jev_provider(),
-                         jev_model=settings.jev_model() or None,
-                         jev_base_url=settings.jev_base_url() or None)
-        result["knowledge_count"] = len(matched_notes)
-        result["persona_skill"] = bool(persona)
-        result["persona_name"] = persona_data.get("name") if persona_data else ""
+        ctx = context_service.build(title, msgs)
+        result = analyze(
+            msgs,
+            ctx["relationship"],
+            context=settings.context(),
+            model=settings.draft_model() or None,
+            provider=settings.draft_provider(),
+            base_url=settings.draft_base_url() or None,
+            reply_to=reply_to,
+            style=ctx["style"],
+            persona=ctx["persona"],
+            thinking=settings.thinking(),
+            jev_provider=settings.jev_provider(),
+            jev_model=settings.jev_model() or None,
+            jev_base_url=settings.jev_base_url() or None,
+        )
+        result["knowledge_count"] = ctx["knowledge_count"]
+        result["persona_skill"] = bool(ctx["persona"])
+        result["persona_name"] = ctx["persona_name"]
         results.put(("ok", result, title, revision))
     except Exception as e:
         results.put(("err", f"分析失败: {e}", title, revision))
