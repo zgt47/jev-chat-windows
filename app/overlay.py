@@ -10,8 +10,7 @@ from PySide6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QR
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QMenu, QMessageBox, QPushButton,
-    QScrollArea as NativeScrollArea, QSlider, QSizeGrip, QSizePolicy, QStackedWidget, QStyle,
-    QSystemTrayIcon, QVBoxLayout, QWidget,
+    QSlider, QSizeGrip, QSizePolicy, QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
     BodyLabel, CardWidget, CheckBox, ComboBox, EditableComboBox, FluentIcon as FIF,
@@ -461,27 +460,21 @@ class Overlay:
                         "idle" if settings.has_key() else "warning")
         self.win.show()
 
-    def _scroll_page(self, fast=False):
-        # 首页用 Qt 原生滚动，不叠加 Fluent 的平滑滚动动画。
-        # 复杂卡片较多时，原生逐帧滚动明显更稳，也不会出现滚轮惯性和重绘互相追赶。
-        scroll = NativeScrollArea() if fast else ScrollArea()
+    def _scroll_page(self):
+        """统一使用 Fluent ScrollArea，避免 Qt 原生 viewport 与 Fluent 样式互相覆盖。"""
+        scroll = ScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet(
-            "QScrollArea { background:#f5f7f6; border:none; }"
-            "QScrollArea > QWidget > QWidget { background:#f5f7f6; }"
-        )
-        scroll.viewport().setAutoFillBackground(True)
-        scroll.viewport().setAttribute(Qt.WA_OpaquePaintEvent, True)
-        scroll.viewport().setAttribute(Qt.WA_StaticContents, True)
-        if fast:
-            scroll.verticalScrollBar().setSingleStep(36)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setAutoFillBackground(False)
+
+        # 只调整滚轮步长，不再替换滚动控件或强制不透明绘制。
+        scroll.verticalScrollBar().setSingleStep(32)
 
         content = QWidget()
         content.setObjectName("pageContent")
-        content.setStyleSheet("QWidget#pageContent { background:#f5f7f6; }")
-        content.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        content.setStyleSheet("QWidget#pageContent { background: transparent; }")
         layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 8, 20, 12)
         layout.setSpacing(14)
@@ -513,7 +506,7 @@ class Overlay:
             card.set_compact(compact)
 
     def _build_home(self):
-        self.home, body = self._scroll_page(fast=True)
+        self.home, body = self._scroll_page()
         heading = QHBoxLayout()
         heading.addWidget(_label("回复建议", 23, "#24382d", True), 1)
         self.updated = _label("", 11, _MUTED)
