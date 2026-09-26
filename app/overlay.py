@@ -212,7 +212,8 @@ class _BubbleButton(QPushButton):
             delta = now - self._press
             if delta.manhattanLength() > 4:
                 self._moved = True
-                self.window().move(self._start + delta)
+                wanted = self._start + delta
+                self.window().move(self.owner._clamp_bubble_pos(wanted, now))
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -1545,6 +1546,69 @@ class Overlay:
         self.win.show()
         self.win.move(pos)
 
+    def _screen_for_point(self, point):
+        """按点选择显示器；多显示器边界上找不到时退回窗口当前显示器/主显示器。"""
+        screen = self.app.screenAt(point)
+        if screen is not None:
+            return screen
+        center = self.win.frameGeometry().center()
+        return self.app.screenAt(center) or self.app.primaryScreen()
+
+    @staticmethod
+    def _clamp_to_geometry(pos, size, geometry, margin=6):
+        """把一个窗口完整夹进指定显示器的可用区域。"""
+        left = geometry.left() + margin
+        top = geometry.top() + margin
+        right = geometry.right() - size.width() - margin + 1
+        bottom = geometry.bottom() - size.height() - margin + 1
+
+        # 极小屏幕/异常 DPI 下，即使窗口比可用区大，也至少贴住左上可见区域。
+        if right < left:
+            right = left
+        if bottom < top:
+            bottom = top
+
+        return QPoint(
+            max(left, min(pos.x(), right)),
+            max(top, min(pos.y(), bottom)),
+        )
+
+    def _clamp_bubble_pos(self, wanted, cursor=None):
+        """悬浮球拖动时始终完整留在当前显示器内。"""
+        probe = cursor or QPoint(
+            wanted.x() + self.win.width() // 2,
+            wanted.y() + self.win.height() // 2,
+        )
+        screen = self._screen_for_point(probe)
+        return self._clamp_to_geometry(
+            wanted, self.win.size(), screen.availableGeometry(), margin=4
+        )
+
+    def _expanded_pos_from_bubble(self, bubble_pos, bubble_size, target_size, screen):
+        """从悬浮球向屏幕内侧展开，而不是固定向右下长大。"""
+        area = screen.availableGeometry()
+        bubble_center = QPoint(
+            bubble_pos.x() + bubble_size.width() // 2,
+            bubble_pos.y() + bubble_size.height() // 2,
+        )
+        screen_center = area.center()
+
+        # 靠右 -> 窗口向左展开；靠左 -> 向右展开。
+        if bubble_center.x() >= screen_center.x():
+            x = bubble_pos.x() + bubble_size.width() - target_size.width()
+        else:
+            x = bubble_pos.x()
+
+        # 靠下 -> 向上展开；靠上 -> 向下展开。
+        if bubble_center.y() >= screen_center.y():
+            y = bubble_pos.y() + bubble_size.height() - target_size.height()
+        else:
+            y = bubble_pos.y()
+
+        return self._clamp_to_geometry(
+            QPoint(x, y), target_size, area, margin=8
+        )
+
     def _save_window_state(self):
         if self._collapsed and self._expandedSize is not None:
             size = self._expandedSize
@@ -1579,11 +1643,22 @@ class Overlay:
         self.win.setMaximumSize(16777215, 16777215)
         self.win.setFixedSize(62, 62)
         self.win.setMask(QRegion(0, 0, 62, 62, QRegion.Ellipse))
+        center = self.win.frameGeometry().center()
+        self.win.move(self._clamp_bubble_pos(self.win.pos(), center))
 
     def _expand_page(self):
-        """从悬浮球恢复完整页面。"""
+        """从悬浮球恢复完整页面；根据所在屏幕边缘向内展开。"""
         if not self._collapsed:
             return
+
+        bubble_pos = self.win.pos()
+        bubble_size = self.win.size()
+        bubble_center = QPoint(
+            bubble_pos.x() + bubble_size.width() // 2,
+            bubble_pos.y() + bubble_size.height() // 2,
+        )
+        screen = self._screen_for_point(bubble_center)
+
         self._collapsed = False
         self.win.setMinimumSize(0, 0)
         self.win.setMaximumSize(16777215, 16777215)
@@ -1606,6 +1681,15 @@ class Overlay:
         self.win.setMinimumHeight(self._normalMinHeight)
         if self._expandedSize is not None:
             self.win.resize(self._expandedSize)
+
+        # resize 不再沿悬浮球左上角固定放大；按悬浮球所在象限向屏幕内侧展开。
+        target_size = self.win.size()
+        self.win.move(
+            self._expanded_pos_from_bubble(
+                bubble_pos, bubble_size, target_size, screen
+            )
+        )
+        self._save_window_state()
         self._apply_transparency()
 
     def _preview_transparency(self, value):
