@@ -40,6 +40,12 @@ _STYLE_PRESETS = [
     ("轻松随意", "轻松随意，像正常聊天，不刻意热情，不装熟"),
     ("自定义", None),
 ]
+_STYLE_DESCRIPTIONS = {
+    "正常、克制、短句、不装熟": "正常、克制、短句，不装熟，不刻意热情。",
+    "简短直接，少解释，不硬接话，不主动延伸": "少解释、少铺垫，直接回应重点，不主动延伸话题。",
+    "轻松随意，像正常聊天，不刻意热情，不装熟": "语气自然一点，可以稍微活泼，但不油腻、不强行熟络。",
+    None: "按你自己的习惯填写规则；只有选择「自定义」时才使用下面的输入框。",
+}
 
 
 def _choice(answers, name):
@@ -696,22 +702,22 @@ class Overlay:
 
         style_label = _label("回复风格", 13)
         box.addWidget(style_label)
-        style_tabs = QHBoxLayout()
-        style_tabs.setSpacing(6)
-        self.profileStyleButtons = []
-        for label, value in _STYLE_PRESETS:
-            button = PushButton(label)
-            button.setCheckable(True)
-            button.clicked.connect(lambda checked=False, v=value: self._style_tab_changed(v))
-            style_tabs.addWidget(button)
-            self.profileStyleButtons.append((button, value))
-        box.addLayout(style_tabs)
+        self.profileStyleBox = ComboBox()
+        self.profileStyleBox.setMinimumWidth(0)
+        self.profileStyleBox.addItems([name for name, value in _STYLE_PRESETS])
+        self.profileStyleBox.setAccessibleName("当前会话的回复风格")
+        self.profileStyleBox.currentIndexChanged.connect(self._profile_style_changed)
+        style_label.setBuddy(self.profileStyleBox)
+        box.addWidget(self.profileStyleBox)
+
+        self.profileStyleDescription = _label("", 12, _MUTED)
+        box.addWidget(self.profileStyleDescription)
+
         self.profileStyleEdit = LineEdit()
         self.profileStyleEdit.setPlaceholderText("例如：话少、不用标点、偶尔用 doge、不说客套话")
         self.profileStyleEdit.setAccessibleName("当前会话的自定义回复风格")
         self.profileStyleEdit.hide()
         box.addWidget(self.profileStyleEdit)
-        box.addWidget(self._hint("默认「自然克制」：正常、克制、短句、不装熟。也可以选其他风格或自定义。"))
 
         alias_label = _label("别名（可选，每行一个）", 13)
         box.addWidget(alias_label)
@@ -1429,12 +1435,19 @@ class Overlay:
         self.profileChatTypeBox.setCurrentIndex(type_index)
 
         style = profile.get("style") or _STYLE_PRESETS[0][1]
-        preset_index = next((i for i, (_, value) in enumerate(_STYLE_PRESETS) if value == style), len(_STYLE_PRESETS) - 1)
-        for i, (button, value) in enumerate(self.profileStyleButtons):
-            button.setChecked(i == preset_index)
+        preset_index = next(
+            (i for i, (_, value) in enumerate(_STYLE_PRESETS) if value == style),
+            len(_STYLE_PRESETS) - 1,
+        )
+        self.profileStyleBox.blockSignals(True)
+        self.profileStyleBox.setCurrentIndex(preset_index)
+        self.profileStyleBox.blockSignals(False)
         custom_style = _STYLE_PRESETS[preset_index][1] is None
         self.profileStyleEdit.setText(style if custom_style else "")
         self.profileStyleEdit.setVisible(custom_style)
+        self.profileStyleDescription.setText(
+            _STYLE_DESCRIPTIONS.get(_STYLE_PRESETS[preset_index][1], "")
+        )
         self.profileAliasesEdit.setPlainText("\n".join(profile.get("aliases", [])))
         self.profileNotesEdit.setPlainText(profile.get("notes", ""))
 
@@ -1463,7 +1476,7 @@ class Overlay:
             return
 
         chat_type = _CHAT_TYPES[self.profileChatTypeBox.currentIndex()][1]
-        style = next((value for button, value in self.profileStyleButtons if button.isChecked()), _STYLE_PRESETS[0][1])
+        style = _STYLE_PRESETS[self.profileStyleBox.currentIndex()][1]
         if style is None:
             style = self.profileStyleEdit.text().strip()
             if not style:
@@ -1487,10 +1500,12 @@ class Overlay:
         self._profile_feedback(f"已保存「{chat}」的会话关系。")
         self.set_status("会话关系已保存，将用于下一次回复", "success")
 
-    def _style_tab_changed(self, value):
-        """回复风格选项卡：预设直接用；选自定义才显示输入框。"""
-        for button, preset in self.profileStyleButtons:
-            button.setChecked(preset == value)
+    def _profile_style_changed(self, index):
+        """回复风格下拉框：切换时同步说明；自定义才显示输入框。"""
+        if not 0 <= index < len(_STYLE_PRESETS):
+            index = 0
+        value = _STYLE_PRESETS[index][1]
+        self.profileStyleDescription.setText(_STYLE_DESCRIPTIONS.get(value, ""))
         self.profileStyleEdit.setVisible(value is None)
         if value is None:
             self.profileStyleEdit.setFocus()
