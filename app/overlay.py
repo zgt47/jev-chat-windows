@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """浅色置顶回复助手：回复建议和独立设置页。发送始终由用户确认。"""
 import threading
+import time
 from datetime import datetime
 from math import isfinite
 from types import SimpleNamespace
@@ -118,9 +119,13 @@ class _Surface(CardWidget):
 
 
 class _Fetched(QObject):
-    """取模型列表的后台线程 → 主线程：哪一组（SimpleNamespace）、取回来的模型 id、失败原因（成功是空串）。
-    Qt 不让跨线程碰控件，信号是跨线程唯一干净的路。"""
+    """取模型列表的后台线程 → 主线程。"""
     done = Signal(object, list, str)
+
+
+class _Tested(QObject):
+    """接口实测结果 → 主线程。"""
+    done = Signal(object, bool, str)
 
 
 class _TitleBar(QWidget):
@@ -543,7 +548,7 @@ class Overlay:
         insight_box.addWidget(self.intent)
         self.judgmentExtra = _label("", 12, _MUTED)
         insight_box.addWidget(self.judgmentExtra)
-        self.insight.setToolTip("根据当前聊天片段推测，可能理解有偏差。紧张度为 0–9 的参考评分。")
+        self.insight.setToolTip("根据当前聊天片段推测，可能理解有偏差。危险度为 0–9，并显示 Jev 的把握度。")
         self.insight.hide()
         body.addWidget(self.insight)
 
@@ -942,6 +947,8 @@ class Overlay:
         box.addWidget(_label("模型", 16, "#304c3c", True))
         self._fetched = _Fetched()
         self._fetched.done.connect(self._models_fetched)
+        self._tested = _Tested()
+        self._tested.done.connect(self._connection_tested)
         self.jev = self._model_group(box, "判断 · Jev", "jev", providers.JEV_PROVIDERS)
         box.addWidget(self._hint(
             "判断意图、紧张度，并给三条候选排序。OpenRouter 走专用接口，其他预设走 System One。"
@@ -1047,6 +1054,10 @@ class Overlay:
         group.fetchButton.setAccessibleName(f"获取{title}的可用模型列表")
         group.fetchButton.clicked.connect(lambda: self._fetch_models(group))
         row.addWidget(group.fetchButton)
+        group.testButton = PushButton("测试")
+        group.testButton.setAccessibleName(f"测试{title}接口")
+        group.testButton.clicked.connect(lambda: self._test_connection(group))
+        row.addWidget(group.testButton)
         box.addLayout(row)
         group.status = _label("", 12, _MUTED)
         box.addWidget(group.status)
@@ -1143,6 +1154,77 @@ class Overlay:
         else:
             group.modelBox.setText(current)
         group.status.setText(f"共 {len(models)} 个")
+
+    def _test_connection(self, group):
+        provider = self._provider_of(group)
+        custom = provider in (providers.JEV_CUSTOM if group.kind == "jev" else providers.CUSTOM)
+        base = group.baseEdit.text().strip() if custom else None
+        key = group.keyEdit.text().strip() or group.stored_key()
+        model = group.modelBox.text().strip()
+        if not key:
+            group.status.setText("先填密钥")
+            return
+        if not model:
+            group.status.setText("先填模型")
+            return
+        if custom and not base:
+            group.status.setText("先填 Base URL")
+            return
+        group.status.setText("正在实测接口…")
+        group.testButton.setEnabled(False)
+        threading.Thread(
+            target=self._test_connection_bg,
+            args=(group, provider, key, model, base),
+            daemon=True,
+        ).start()
+
+    def _test_connection_bg(self, group, provider, key, model, base):
+        start = time.perf_counter()
+        try:
+            if group.kind == "jev":
+                state = {
+                    "chat": {
+                        "relationship": "friends",
+                        "messages": [{"from": "her", "text": "在吗"}],
+                        "latest_from": "her",
+                        "is_group": False,
+                    }
+                }
+                questions = {
+                    "test": {
+                        "type": "noul",
+                        "instructions": "Is the latest message a direct question?",
+                        "criteria": {"true": "It is a direct question.", "false": "It is not a direct question."},
+                    }
+                }
+                # 测试时不能依赖环境变量里旧 key，临时覆盖后再恢复。
+                from core.providers import JEV_ENV
+                import os
+                old = os.environ.get(JEV_ENV)
+                os.environ[JEV_ENV] = key
+                try:
+                    jev_client.ask(state, questions, timeout=12, provider=provider, model=model, base_url=base)
+                finally:
+                    if old is None:
+                        os.environ.pop(JEV_ENV, None)
+                    else:
+                        os.environ[JEV_ENV] = old
+            else:
+                spec = providers.DRAFT_PROVIDERS[provider]
+                llm.chat(
+                    spec.protocol, base or spec.base, key, model,
+                    "只做接口连通测试。", ["只回复 OK"],
+                    temperature=0.2, max_tokens=12, thinking=False,
+                    extra_body=spec.extra(False), headers=spec.headers, timeout=12,
+                )
+            ms = round((time.perf_counter() - start) * 1000)
+            self._tested.done.emit(group, True, f"连接成功 · {ms} ms")
+        except Exception as exc:
+            self._tested.done.emit(group, False, "连接失败：" + str(exc)[:160])
+
+    def _connection_tested(self, group, ok, message):
+        group.testButton.setEnabled(True)
+        group.status.setText(message)
 
     def _set_group(self, group, provider, model):
         group.providerBox.blockSignals(True)
