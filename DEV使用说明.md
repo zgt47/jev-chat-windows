@@ -25,15 +25,14 @@ JevChat-Windows-Dev/
 ├─ main.py                  外置业务源码
 ├─ app/                     外置业务源码
 ├─ core/                    外置业务源码
-├─ 更新开发源码.cmd
-├─ 更新开发源码.ps1
+├─ 更新开发源码.exe          图形源码更新器
 ├─ config.json              运行后生成；更新源码不会删除
 └─ chat_profiles.json       运行后生成；更新源码不会删除
 ```
 
 ## 日常测试新修改
 
-关闭程序后双击 `更新开发源码.cmd`。
+关闭程序后双击 `更新开发源码.exe`。会打开图形窗口显示下载、解压、替换以及失败原因，不再使用 CMD。
 
 它只会从 `dev-external-source` 更新：
 

@@ -8,10 +8,15 @@ on:
       - 'requirements.txt'
       - 'dev/DevBootstrap.py'
       - 'dev/dev.spec'
+      - 'dev/DevUpdater.cs'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: dev-runtime-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -36,7 +41,19 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean dev/dev.spec
 
-      - name: 加入外置源码和更新脚本
+      - name: 构建图形源码更新器
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+            "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          )
+          $csc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $csc) { throw "找不到 Windows Framework C# 编译器" }
+          & $csc /nologo /target:winexe /optimize+ /out:"dev\更新开发源码.exe" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll "dev\DevUpdater.cs"
+          if ($LASTEXITCODE -ne 0) { throw "图形源码更新器编译失败" }
+
+      - name: 加入外置源码和更新器
         shell: pwsh
         run: |
           $out = Join-Path $PWD 'dist\JevChat-Windows-Dev'
@@ -46,7 +63,7 @@ jobs:
           Copy-Item 'app' $out -Recurse -Force
           Copy-Item 'core' $out -Recurse -Force
           Copy-Item 'requirements.txt','LICENSE','NOTICE','DEV使用说明.md' $out -Force
-          Copy-Item 'dev\更新开发源码.cmd','dev\dev_update.ps1' $out -Force
+          Copy-Item 'dev\更新开发源码.exe' $out -Force
 
           $size = (Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum).Sum
           Write-Host ("开发环境展开大小：{0:N1} MB" -f ($size / 1MB))
