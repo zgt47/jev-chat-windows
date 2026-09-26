@@ -38,7 +38,7 @@ _DEFAULT_JEV = "openrouter"
 _DEFAULT_DRAFT = "deepseek"
 _DEFAULT_ALWAYS_ON_TOP = True
 _DEFAULT_AUTO_ANALYZE = True
-_DEFAULT_OVERLAY_OPACITY = 96
+_DEFAULT_TRANSPARENCY = 0
 _DEFAULT_RECORD_HISTORY = False
 _DEFAULT_HISTORY_LIMIT = 30
 
@@ -148,12 +148,27 @@ def chat_allowed(title: str) -> bool:
     return any(k.lower() in title for k in keys)
 
 
-def overlay_opacity() -> int:
+def transparency() -> int:
+    """界面透明度：0=完全不透明，40=最多 40% 透明。
+
+    兼容上一版 overlay_opacity（60..100，不透明度）：
+    例如旧值 96 会迁移成透明度 4。
+    """
+    raw = _read("overlay_transparency", None)
+    if raw is None:
+        legacy = _read("overlay_opacity", None)
+        if legacy is not None:
+            try:
+                raw = 100 - int(legacy)
+            except (TypeError, ValueError):
+                raw = _DEFAULT_TRANSPARENCY
+        else:
+            raw = _DEFAULT_TRANSPARENCY
     try:
-        n = int(_read("overlay_opacity", _DEFAULT_OVERLAY_OPACITY))
+        n = int(raw)
     except (TypeError, ValueError):
-        n = _DEFAULT_OVERLAY_OPACITY
-    return max(60, min(100, n))
+        n = _DEFAULT_TRANSPARENCY
+    return max(0, min(40, n))
 
 
 def record_history() -> bool:
@@ -276,7 +291,7 @@ def save(
     always_on_top_on: bool | None = None,
     auto_analyze_on: bool | None = None,
     whitelist_items: list[str] | None = None,
-    overlay_opacity_n: int | None = None,
+    transparency_n: int | None = None,
     record_history_on: bool | None = None,
     history_limit_n: int | None = None,
 ) -> None:
@@ -309,7 +324,7 @@ def save(
     def flag(new, now):
         return now() if new is None else bool(new)
 
-    opacity = overlay_opacity() if overlay_opacity_n is None else max(60, min(100, int(overlay_opacity_n)))
+    transparency_value = transparency() if transparency_n is None else max(0, min(40, int(transparency_n)))
     history_n = history_limit() if history_limit_n is None else max(10, min(100, int(history_limit_n)))
     wl = whitelist() if whitelist_items is None else [str(x).strip() for x in whitelist_items if str(x).strip()]
 
@@ -330,7 +345,7 @@ def save(
         "always_on_top": flag(always_on_top_on, always_on_top),
         "auto_analyze": flag(auto_analyze_on, auto_analyze),
         "whitelist": wl,
-        "overlay_opacity": opacity,
+        "overlay_transparency": transparency_value,
         "record_history": flag(record_history_on, record_history),
         "history_limit": history_n,
         "window_state": window_state(),

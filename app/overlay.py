@@ -7,9 +7,9 @@ from math import isfinite
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont
+from PySide6.QtGui import QAction, QColor, QFont, QRegion
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QMenu, QPushButton, QSizeGrip, QSizePolicy,
+    QApplication, QFrame, QHBoxLayout, QMenu, QPushButton, QSlider, QSizeGrip, QSizePolicy,
     QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
@@ -251,7 +251,7 @@ class _ReplyCard(_Surface):
 
 class Overlay:
     def __init__(self, on_fill, on_toggle_capture=None, on_target_change=None, result_of=None,
-                 on_toggle_debug=None, on_regenerate=None, on_clear_replies=None):
+                 on_toggle_debug=None, on_regenerate=None):
         """result_of(会话名) → 那个会话上次的结果或 None；切着看别的会话时用它把旧结果放回来。
         on_target_change(会话名, 人名) → 用户在群里挑了回复对象。
         on_toggle_debug(开不开) → 开关调试视图那个独立窗口。"""
@@ -263,7 +263,6 @@ class Overlay:
         self.on_target_change = on_target_change
         self.on_toggle_debug = on_toggle_debug
         self.on_regenerate = on_regenerate
-        self.on_clear_replies = on_clear_replies
         self.result_of = result_of
         self.cands = []
         self.cards = []
@@ -283,7 +282,6 @@ class Overlay:
         self.app.setQuitOnLastWindowClosed(False)
         self.win = _MainWindow(self._relayout, self._close_requested)
         self.win.setObjectName("assistantWindow")
-        self.win.setAttribute(Qt.WA_TranslucentBackground, True)
         self.win.setWindowTitle("JevChat-Windows")
         flags = Qt.Window | Qt.FramelessWindowHint
         if settings.always_on_top():
@@ -391,7 +389,7 @@ class Overlay:
         x = max(screen.left(), min(x, screen.right() - width + 1))
         y = max(screen.top(), min(y, screen.bottom() - height + 1))
         self.win.move(x, y)
-        self._apply_opacity()
+        self._apply_transparency()
         self._setup_tray()
         self._relayout(self.win.width(), self.win.height())  # resizeEvent 补不到构造时这一次
         self.set_status("等待新消息" if settings.has_key() else "需要配置模型",
@@ -450,21 +448,11 @@ class Overlay:
         reply_actions = QHBoxLayout()
         reply_actions.setSpacing(8)
         reply_actions.addStretch(1)
-        self.manualAnalyzeButton = PushButton("分析当前对话")
-        self.manualAnalyzeButton.setToolTip("使用当前已经识别到的聊天记录重新跑完整 Jev 分析")
+        self.manualAnalyzeButton = PrimaryPushButton("分析当前对话")
+        self.manualAnalyzeButton.setToolTip("用当前聊天记录重新执行 Jev 判断、起草和排序")
         self.manualAnalyzeButton.clicked.connect(self._regenerate_clicked)
         self.manualAnalyzeButton.setEnabled(False)
         reply_actions.addWidget(self.manualAnalyzeButton)
-        self.clearRepliesButton = PushButton("清空建议")
-        self.clearRepliesButton.setToolTip("清掉当前会话这一批回复建议，不删除聊天记录")
-        self.clearRepliesButton.clicked.connect(self._clear_replies_clicked)
-        self.clearRepliesButton.setEnabled(False)
-        reply_actions.addWidget(self.clearRepliesButton)
-        self.regenerateButton = PrimaryPushButton("重新生成")
-        self.regenerateButton.setToolTip("不等新消息，直接用当前聊天记录重新生成一批回复")
-        self.regenerateButton.clicked.connect(self._regenerate_clicked)
-        self.regenerateButton.setEnabled(False)
-        reply_actions.addWidget(self.regenerateButton)
         body.addLayout(reply_actions)
 
         chat_row = QHBoxLayout()
@@ -881,12 +869,24 @@ class Overlay:
         box.addWidget(self.whitelistEdit)
         box.addWidget(self._hint("只限制自动分析；标题包含任一关键词才自动调用模型，手动分析不受限制。"))
 
-        opacity_label = _label("窗口不透明度", 13)
-        box.addWidget(opacity_label)
-        self.opacityBox = SpinBox()
-        self.opacityBox.setRange(60, 100)
-        self.opacityBox.setSuffix("%")
-        box.addWidget(self.opacityBox)
+        transparency_row = QHBoxLayout()
+        transparency_row.addWidget(_label("界面透明度", 13), 1)
+        self.transparencyValue = _label("0%", 12, _MUTED)
+        self.transparencyValue.setFixedWidth(42)
+        self.transparencyValue.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        transparency_row.addWidget(self.transparencyValue)
+        box.addLayout(transparency_row)
+        self.transparencySlider = QSlider(Qt.Horizontal)
+        self.transparencySlider.setRange(0, 40)
+        self.transparencySlider.setSingleStep(1)
+        self.transparencySlider.setPageStep(5)
+        self.transparencySlider.setTickInterval(5)
+        self.transparencySlider.setToolTip("0% = 完全不透明；拖动时立即预览，保存后才记住")
+        self.transparencySlider.valueChanged.connect(self._preview_transparency)
+        box.addWidget(self.transparencySlider)
+        box.addWidget(self._hint(
+            "0% = 完全不透明。拖动时界面立即变化；最高限制 40%，避免透明到看不清。"
+        ))
 
         history_row = QHBoxLayout()
         history_row.addWidget(_label("记录聊天历史（仅本机）", 13), 1)
@@ -1239,7 +1239,10 @@ class Overlay:
         self.contextBox.setValue(settings.context())
         self.autoAnalyzeSwitch.setChecked(settings.auto_analyze())
         self.whitelistEdit.setPlainText("\n".join(settings.whitelist()))
-        self.opacityBox.setValue(settings.overlay_opacity())
+        self.transparencySlider.blockSignals(True)
+        self.transparencySlider.setValue(settings.transparency())
+        self.transparencySlider.blockSignals(False)
+        self.transparencyValue.setText(f"{settings.transparency()}%")
         self.historySwitch.setChecked(settings.record_history())
         self.historyLimitBox.setValue(settings.history_limit())
         self.targetSwitch.setChecked(settings.reply_target())
@@ -1293,7 +1296,7 @@ class Overlay:
                 reply_target_on=self.targetSwitch.isChecked(),
                 auto_analyze_on=self.autoAnalyzeSwitch.isChecked(),
                 whitelist_items=self.whitelistEdit.toPlainText().splitlines(),
-                overlay_opacity_n=self.opacityBox.value(),
+                transparency_n=self.transparencySlider.value(),
                 record_history_on=self.historySwitch.isChecked(),
                 history_limit_n=self.historyLimitBox.value(),
                 thinking_on=self.thinkingSwitch.isChecked(),
@@ -1304,7 +1307,7 @@ class Overlay:
             return
 
         self._load_settings()
-        self._apply_opacity()
+        self._apply_transparency()
         self._render_targets()
         self._settings_feedback("全局设置已保存，将用于下一次回复。")
         self.setupButton.hide()
@@ -1455,32 +1458,25 @@ class Overlay:
         (self.contextBox if settings.has_key() else self.jev.keyEdit).setFocus()
 
     def _back_home(self):
+        if self.pages.currentWidget() == self.settingsPage:
+            self._apply_transparency(settings.transparency())
         self.jev.keyEdit.clear()
         self.draft.keyEdit.clear()
         self.pages.setCurrentWidget(self.home)
         self.settingsButton.setEnabled(True)
 
     def _sync_reply_actions(self):
-        """同步「清空建议 / 重新生成」的可用状态。"""
+        """首页只保留一个明确动作：分析当前对话。"""
         has_chat = bool(self._shown or self._chat)
         browsing = bool(self._chat) and self._shown != self._chat
         self.manualAnalyzeButton.setEnabled(has_chat and not browsing and not self._busy)
-        self.clearRepliesButton.setEnabled(bool(self.cands) and not self._busy)
-        self.regenerateButton.setEnabled(has_chat and not browsing and not self._busy)
-
-    def _clear_replies_clicked(self):
-        chat = self._shown or self._chat
-        if not chat or self._busy:
-            return
-        if self.on_clear_replies:
-            self.on_clear_replies(chat)
 
     def _regenerate_clicked(self):
         chat = self._shown or self._chat
         if not chat or self._busy:
             return
         if self._chat and chat != self._chat:
-            self.set_status("正在浏览其他会话，切回这个聊天后再重新生成。", "warning")
+            self.set_status("正在浏览其他会话，切回这个聊天后再分析。", "warning")
             return
         if self.on_regenerate:
             self.on_regenerate(chat)
@@ -1495,7 +1491,7 @@ class Overlay:
         self.empty.show()
         self.updated.setText("")
         self.emptyTitle.setText("回复建议已清空")
-        self.emptyHint.setText("聊天记录还在。\n点上方「重新生成」就能换一批，不用等对方再发消息。")
+        self.emptyHint.setText("聊天记录还在。\n点上方「分析当前对话」即可重新分析。")
         self.setupButton.hide()
         self.set_status(status_text, "idle")
         self._sync_reply_actions()
@@ -1555,10 +1551,13 @@ class Overlay:
             w.hide()
         self.bubbleButton.show()
         self.titleLayout.setContentsMargins(2, 2, 2, 2)
-        self.win.setStyleSheet("QWidget#assistantWindow { background: transparent; border: none; }")
+        self.win.setStyleSheet(
+            "QWidget#assistantWindow { background: #f5f7f6; border: none; border-radius: 31px; }"
+        )
         self.win.setMinimumSize(0, 0)
         self.win.setMaximumSize(16777215, 16777215)
         self.win.setFixedSize(62, 62)
+        self.win.setMask(QRegion(0, 0, 62, 62, QRegion.Ellipse))
 
     def _expand_page(self):
         """从悬浮球恢复完整页面。"""
@@ -1573,6 +1572,7 @@ class Overlay:
             w.show()
         self.expandButton.hide()
         self.titleLayout.setContentsMargins(18, 12, 10, 10)
+        self.win.clearMask()
         self.win.setStyleSheet(
             "QWidget#assistantWindow { background: #f5f7f6; border: 1px solid #dce3de; border-radius: 14px; }"
         )
@@ -1585,10 +1585,16 @@ class Overlay:
         self.win.setMinimumHeight(self._normalMinHeight)
         if self._expandedSize is not None:
             self.win.resize(self._expandedSize)
-        self._apply_opacity()
+        self._apply_transparency()
 
-    def _apply_opacity(self):
-        self.win.setWindowOpacity(settings.overlay_opacity() / 100.0)
+    def _preview_transparency(self, value):
+        self.transparencyValue.setText(f"{value}%")
+        self._apply_transparency(value)
+
+    def _apply_transparency(self, value=None):
+        """0 = 完全不透明；40 = 40% 透明。透明只影响视觉，不启用鼠标穿透。"""
+        value = settings.transparency() if value is None else max(0, min(40, int(value)))
+        self.win.setWindowOpacity(1.0 - value / 100.0)
 
     def _setup_tray(self):
         self.tray = QSystemTrayIcon(self.app.style().standardIcon(QStyle.SP_ComputerIcon), self.win)
@@ -1890,9 +1896,7 @@ class Overlay:
         if best not in range(len(self.cands)):
             best = 0
         raw_scores = result.get("scores") or []
-        scores = [raw_scores[i] if i < len(raw_scores) else None for i in range(len(self.cands))]
-        if not any(scores):  # 全 0/None（旧结果或接口未返回）就不展示百分比
-            scores = [None] * len(self.cands)
+        scores = [raw_scores[i] if i < len(raw_scores) else 0.0 for i in range(len(self.cands))]
         # 按概率降序排，推荐位（API 给的 choice）强制第一，同分按原索引
         order = sorted(range(len(self.cands)), key=lambda i: (i != best, -(scores[i] or 0), i))
         for position, index in enumerate(order):

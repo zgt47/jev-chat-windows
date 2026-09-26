@@ -117,7 +117,10 @@ def analyze(
     scores = [0.0, 0.0, 0.0]
     for key, idx in _REPLY_IDX.items():
         try:
-            scores[idx] = float(probabilities.get(key, 0.0))
+            value = float(probabilities.get(key, 0.0))
+            if 1.0 < value <= 100.0:
+                value /= 100.0
+            scores[idx] = max(0.0, min(1.0, value))
         except (TypeError, ValueError):
             scores[idx] = 0.0
 
