@@ -10,6 +10,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+
+
+_EXTERNAL_FILE_REQUEST = re.compile(
+    r"(?:"
+    r"(?:发|传|拍|截|提供|出示).{0,8}(?:报告|截图|照片|图片|视频|文件|附件|维保记录|出险记录)"
+    r"|(?:报告|截图|照片|图片|视频|文件|附件|维保记录|出险记录).{0,10}"
+    r"(?:发|传|给我|给我看|看看|看下|看一下|拍|截|提供|出示)"
+    r")",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +62,12 @@ def evaluate(
     history = chat_state.get("history") or []
     if not history or history[-1][0] != "her":
         return AutoSendPlan.skip()
+
+    latest_text = str(history[-1][1] if len(history[-1]) > 1 else "")
+    if _EXTERNAL_FILE_REQUEST.search(latest_text):
+        return AutoSendPlan.block(
+            "自动发送已暂停：对方要求报告、截图或附件等 Jev 当前不能自动执行的动作，需要人工处理。"
+        )
 
     # 群聊默认不自动发。senders 非空意味着自动识别出了群成员，也按群聊处理。
     if profile.get("chat_type") == "group" or chat_state.get("senders"):

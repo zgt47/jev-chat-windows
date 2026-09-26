@@ -23,6 +23,15 @@ _LEGACY_PATH = os.path.join(_ROOT, "persona_skill.json")
 _SKILL_SCHEMA = "jev-persona-skill/v1"
 _LIBRARY_SCHEMA = "jev-persona-library/v1"
 
+# 旧测试 Skill 里曾经有“我发你截图 / 稍等我发报告”这类代表案例。
+# 它们会把起草模型带向虚构现实动作；保留在文件里供用户编辑，但运行时不作为 few-shot 示例。
+_UNSAFE_RUNTIME_EXAMPLE = re.compile(
+    r"(?:我[:：].{0,30})?(?:"
+    r"发你|给你发|传你|给你传|截给你|拍给你|稍等我发|报告.*给你看|记录.*给你看"
+    r")",
+    re.I,
+)
+
 DEFAULT_PERSONA = "__default__"
 NO_PERSONA = "__none__"
 
@@ -266,17 +275,22 @@ def prompt_text(persona_id: str | None = None) -> str:
         f"【人格 Skill：{data['name']}】",
         f"角色：{data['role']}",
         "这是当前会话选用的人格规则。按这个人格的口吻和处理逻辑行动，"
-        "但绝不能据此编造价格、库存、承诺、订单状态、车辆事实或其它未经确认的信息。",
+        "但绝不能据此编造价格、库存、承诺、订单状态、车辆事实或其它未经确认的信息。"
+        "人格里的案例只用于学习表达和判断，不代表当前真的持有报告、截图、图片、附件或具备发送这些资料的能力。",
     ]
     if data["summary"]:
         parts.append("总体画像：" + data["summary"])
 
+    safe_examples = [
+        x for x in data["examples"]
+        if not _UNSAFE_RUNTIME_EXAMPLE.search(x)
+    ]
     sections = (
         ("口吻规则", data["tone_rules"]),
         ("处理逻辑", data["decision_rules"]),
         ("常用表达", data["common_phrases"]),
         ("禁用表达", data["forbidden_phrases"]),
-        ("代表案例", data["examples"]),
+        ("代表案例", safe_examples),
     )
     for title, rows in sections:
         if rows:
