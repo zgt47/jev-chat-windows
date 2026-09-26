@@ -6,7 +6,7 @@ from datetime import datetime
 from math import isfinite
 from types import SimpleNamespace
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap, QRegion
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QMenu, QPushButton, QSlider, QSizeGrip, QSizePolicy,
@@ -180,12 +180,11 @@ class _TitleBar(QWidget):
 
 
 class _MainWindow(QWidget):
-    """主窗：关闭和最小化都交给 Overlay 管理。"""
-    def __init__(self, relayout, on_close, on_minimize):
+    """主窗：关闭按钮收进托盘；最小化交给 Windows 正常处理。"""
+    def __init__(self, relayout, on_close):
         super().__init__()
         self._relayout = relayout
         self._on_close = on_close
-        self._on_minimize = on_minimize
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -193,11 +192,6 @@ class _MainWindow(QWidget):
 
     def closeEvent(self, event):
         self._on_close(event)
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.WindowStateChange and self.isMinimized():
-            QTimer.singleShot(0, self._on_minimize)
 
 
 class _BubbleButton(QPushButton):
@@ -210,9 +204,8 @@ class _BubbleButton(QPushButton):
         self._moved = False
         self.setFixedSize(58, 58)
         self.setStyleSheet(
-            "QPushButton { background:#18794e; color:white; border:none; border-radius:29px;"
+            "QPushButton { background: transparent; color:white; border:none; border-radius:29px;"
             " font-size:14px; font-weight:600; }"
-            "QPushButton:hover { background:#146c45; }"
         )
 
     def mousePressEvent(self, event):
@@ -320,7 +313,7 @@ class Overlay:
         self._trayIcon = _tray_icon(self._bubble_color)
         self._geometryAnimation = None
         self.app.setQuitOnLastWindowClosed(False)
-        self.win = _MainWindow(self._relayout, self._close_requested, self._minimize_to_tray)
+        self.win = _MainWindow(self._relayout, self._close_requested)
         self.win.setObjectName("assistantWindow")
         self.win.setWindowTitle("JevChat-Windows")
         self.win.setWindowIcon(self._trayIcon)
@@ -1605,21 +1598,30 @@ class Overlay:
             wanted, self.win.size(), screen.availableGeometry(), margin=4
         )
 
-    def _bubble_snap_pos(self, pos, screen):
-        """吸附左/右边缘，并让一半悬浮球藏到屏幕外。"""
+    def _bubble_snap_pos(self, pos, screen, force=False):
+        """靠近左右边缘才吸附并半隐藏；离边缘较远就保持自由位置。"""
         area = screen.availableGeometry()
         size = self.win.size()
         half = size.width() // 2
-        center_x = pos.x() + size.width() // 2
 
-        if abs(center_x - area.left()) <= abs(area.right() - center_x):
+        # 先保证自由位置完整可见。
+        free = self._clamp_to_geometry(pos, size, area, margin=4)
+        center_x = free.x() + size.width() // 2
+        left_distance = center_x - area.left()
+        right_distance = area.right() - center_x
+
+        snap_distance = 72
+        if not force and min(left_distance, right_distance) > snap_distance:
+            return free
+
+        if left_distance <= right_distance:
             x = area.left() - half
         else:
             x = area.right() - half + 1
 
         y = max(
             area.top() + 6,
-            min(pos.y(), area.bottom() - size.height() - 6 + 1),
+            min(free.y(), area.bottom() - size.height() - 6 + 1),
         )
         return QPoint(x, y)
 
@@ -1648,16 +1650,32 @@ class Overlay:
             self._save_bubble_state()
 
     def _restored_bubble_pos(self):
-        """优先使用上一次悬浮球位置；没有记录才从当前主窗位置生成。"""
+        """优先恢复上一次悬浮球位置；自由位置保持自由，贴边位置保持贴边。"""
         saved = settings.bubble_state()
         if "x" in saved and "y" in saved:
             pos = QPoint(int(saved["x"]), int(saved["y"]))
             probe = QPoint(pos.x() + 31, pos.y() + 31)
             screen = self._screen_for_point(probe)
-            return self._bubble_snap_pos(pos, screen)
+            area = screen.availableGeometry()
+            half = self.win.width() // 2
 
+            # 旧位置本身已经是半隐藏吸附状态，原样贴回对应边。
+            if pos.x() <= area.left():
+                return QPoint(
+                    area.left() - half,
+                    max(area.top() + 6, min(pos.y(), area.bottom() - self.win.height() - 5)),
+                )
+            if pos.x() + self.win.width() >= area.right():
+                return QPoint(
+                    area.right() - half + 1,
+                    max(area.top() + 6, min(pos.y(), area.bottom() - self.win.height() - 5)),
+                )
+
+            return self._clamp_to_geometry(pos, self.win.size(), area, margin=4)
+
+        # 第一次进入悬浮球，默认吸附到距离主窗口最近的一边。
         screen = self._screen_for_point(self.win.frameGeometry().center())
-        return self._bubble_snap_pos(self.win.pos(), screen)
+        return self._bubble_snap_pos(self.win.pos(), screen, force=True)
 
     def _expanded_pos_from_bubble(self, bubble_pos, bubble_size, target_size, screen):
         """悬浮球在左边就贴左展开，在右边就贴右展开；纵向围绕球展开并自动夹回屏幕。"""
@@ -1684,6 +1702,19 @@ class Overlay:
         anim.setDuration(duration)
         anim.setStartValue(start_rect)
         anim.setEndValue(end_rect)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        if on_finished is not None:
+            anim.finished.connect(on_finished)
+        self._geometryAnimation = anim
+        anim.start()
+
+    def _animate_opacity(self, end_opacity, duration=115, on_finished=None):
+        if self._geometryAnimation is not None:
+            self._geometryAnimation.stop()
+        anim = QPropertyAnimation(self.win, b"windowOpacity", self.win)
+        anim.setDuration(duration)
+        anim.setStartValue(self.win.windowOpacity())
+        anim.setEndValue(float(end_opacity))
         anim.setEasingCurve(QEasingCurve.OutCubic)
         if on_finished is not None:
             anim.finished.connect(on_finished)
@@ -1742,7 +1773,7 @@ class Overlay:
         self.bubbleButton.show()
         self.titleLayout.setContentsMargins(2, 2, 2, 2)
         self.win.setStyleSheet(
-            "QWidget#assistantWindow { background: #f5f7f6; border: none; border-radius: 31px; }"
+            f"QWidget#assistantWindow {{ background: {self._bubble_color}; border: none; border-radius: 31px; }}"
         )
         self.win.setMinimumSize(0, 0)
         self.win.setMaximumSize(16777215, 16777215)
@@ -1788,15 +1819,13 @@ class Overlay:
         target_pos = self._expanded_pos_from_bubble(
             bubble_pos, bubble_size, target_size, screen
         )
-        start_rect = QRect(bubble_pos, bubble_size)
-        end_rect = QRect(target_pos, target_size)
 
-        # 悬浮球坐标已经单独保存；主窗口展开不会覆盖它。
-        self._animate_geometry(
-            start_rect, end_rect, duration=190,
-            on_finished=self._save_window_state,
-        )
-        self._apply_transparency()
+        # 顶层窗口做“尺寸拉伸动画”在 Windows 上容易出现拖影。
+        # 先直接落到最终尺寸和位置，再做很短的淡入，视觉更平滑且不会拖出残影。
+        target_opacity = 1.0 - settings.transparency() / 100.0
+        self.win.setGeometry(QRect(target_pos, target_size))
+        self.win.setWindowOpacity(max(0.45, target_opacity - 0.28))
+        self._animate_opacity(target_opacity, duration=115, on_finished=self._save_window_state)
 
     def _preview_transparency(self, value):
         self.transparencyValue.setText(f"{value}%")
@@ -1827,13 +1856,6 @@ class Overlay:
             if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None
         )
         self.tray.show()
-
-    def _minimize_to_tray(self):
-        """任务栏最小化/点击活动中的任务栏按钮时，直接收进系统托盘。"""
-        if self._force_quit:
-            return
-        self._save_window_state()
-        self.win.hide()
 
     def _close_requested(self, event):
         if self._force_quit:
@@ -2189,9 +2211,13 @@ class Overlay:
             color = "#b07a21"
         self._bubble_color = color
         self.bubbleButton.setStyleSheet(
-            f"QPushButton {{ background:{color}; color:white; border:none; border-radius:29px;"
-            " font-size:14px; font-weight:600; }}"
+            "QPushButton { background: transparent; color:white; border:none; border-radius:29px;"
+            " font-size:14px; font-weight:600; }"
         )
+        if self._collapsed:
+            self.win.setStyleSheet(
+                f"QWidget#assistantWindow {{ background: {color}; border: none; border-radius: 31px; }}"
+            )
         self._trayIcon = _tray_icon(color)
         self.win.setWindowIcon(self._trayIcon)
         if hasattr(self, "tray"):
