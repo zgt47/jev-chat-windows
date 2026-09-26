@@ -155,6 +155,43 @@ def on_target_change(title, name):
         start_analyze(title, msgs)
 
 
+def clear_generated_replies(title):
+    """清掉当前会话的 AI 建议，但保留聊天记录；旧结果不再恢复出来。"""
+    if not title:
+        return
+    if state["busy"]:
+        ov.set_status("正在生成中，完成后再清空。", "warning")
+        return
+    chat = chat_of(title)
+    chat["result"] = None
+    chat["rev"] += 1
+    state["rerun"] = None
+    if title == ov.current_chat():
+        ov.clear_suggestions()
+
+
+def regenerate_replies(title):
+    """不用等新消息，直接拿当前会话已经识别到的聊天记录重新跑完整链路。"""
+    if not title:
+        return
+    if state["busy"]:
+        ov.set_status("上一轮还在生成，请稍等。", "warning")
+        return
+    if state["chat"] and title != state["chat"]:
+        ov.set_status("正在浏览其他会话，切回这个聊天后再重新生成。", "warning")
+        return
+    chat = chat_of(title)
+    msgs = list(chat["history"])
+    if not any(m[0] == "her" for m in msgs):
+        ov.set_status("当前还没有识别到对方消息，暂时不能重新生成。", "warning")
+        return
+    chat["result"] = None
+    chat["rev"] += 1
+    state["rerun"] = None
+    ov.clear_suggestions("旧建议已清空，正在重新生成…")
+    start_analyze(title, msgs)
+
+
 def drain():
     """把子进程队列里攒的东西全收掉。"""
     global child
@@ -265,6 +302,7 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
     debug_on = multiprocessing.Event()  # 同上，置位=子进程往队列里送整帧给调试窗
     ov = Overlay(on_fill=fill_reply, on_toggle_capture=on_toggle_capture,
                  on_target_change=on_target_change, on_toggle_debug=set_debug,
+                 on_regenerate=regenerate_replies, on_clear_replies=clear_generated_replies,
                  result_of=lambda t: chats.get(t, {}).get("result"))
     child = dbg = None
     try:

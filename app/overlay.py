@@ -184,7 +184,7 @@ class _ReplyCard(_Surface):
 
 class Overlay:
     def __init__(self, on_fill, on_toggle_capture=None, on_target_change=None, result_of=None,
-                 on_toggle_debug=None):
+                 on_toggle_debug=None, on_regenerate=None, on_clear_replies=None):
         """result_of(会话名) → 那个会话上次的结果或 None；切着看别的会话时用它把旧结果放回来。
         on_target_change(会话名, 人名) → 用户在群里挑了回复对象。
         on_toggle_debug(开不开) → 开关调试视图那个独立窗口。"""
@@ -195,6 +195,8 @@ class Overlay:
         self.on_toggle_capture = on_toggle_capture
         self.on_target_change = on_target_change
         self.on_toggle_debug = on_toggle_debug
+        self.on_regenerate = on_regenerate
+        self.on_clear_replies = on_clear_replies
         self.result_of = result_of
         self.cands = []
         self.cards = []
@@ -334,6 +336,22 @@ class Overlay:
         self.updated.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         heading.addWidget(self.updated)
         body.addLayout(heading)
+
+        reply_actions = QHBoxLayout()
+        reply_actions.setSpacing(8)
+        reply_actions.addStretch(1)
+        self.clearRepliesButton = PushButton("清空建议")
+        self.clearRepliesButton.setToolTip("清掉当前会话这一批回复建议，不删除聊天记录")
+        self.clearRepliesButton.clicked.connect(self._clear_replies_clicked)
+        self.clearRepliesButton.setEnabled(False)
+        reply_actions.addWidget(self.clearRepliesButton)
+        self.regenerateButton = PrimaryPushButton("重新生成")
+        self.regenerateButton.setToolTip("不等新消息，直接用当前聊天记录重新生成一批回复")
+        self.regenerateButton.clicked.connect(self._regenerate_clicked)
+        self.regenerateButton.setEnabled(False)
+        reply_actions.addWidget(self.regenerateButton)
+        body.addLayout(reply_actions)
+
         chat_row = QHBoxLayout()
         chat_row.setSpacing(8)
         prefix = _label("当前会话", 12, _MUTED)
@@ -984,6 +1002,45 @@ class Overlay:
         self.pages.setCurrentWidget(self.home)
         self.settingsButton.setEnabled(True)
 
+    def _sync_reply_actions(self):
+        """同步「清空建议 / 重新生成」的可用状态。"""
+        has_chat = bool(self._shown or self._chat)
+        browsing = bool(self._chat) and self._shown != self._chat
+        self.clearRepliesButton.setEnabled(bool(self.cands) and not self._busy)
+        self.regenerateButton.setEnabled(has_chat and not browsing and not self._busy)
+
+    def _clear_replies_clicked(self):
+        chat = self._shown or self._chat
+        if not chat or self._busy:
+            return
+        if self.on_clear_replies:
+            self.on_clear_replies(chat)
+
+    def _regenerate_clicked(self):
+        chat = self._shown or self._chat
+        if not chat or self._busy:
+            return
+        if self._chat and chat != self._chat:
+            self.set_status("正在浏览其他会话，切回这个聊天后再重新生成。", "warning")
+            return
+        if self.on_regenerate:
+            self.on_regenerate(chat)
+
+    def clear_suggestions(self, status_text="建议已清空，可直接重新生成。"):
+        """只清当前显示的 AI 结果；聊天记录、会话关系和采集内容都保留。"""
+        self.cands = []
+        self._current = False
+        self._clear_cards()
+        self.insight.hide()
+        self.referenceNote.hide()
+        self.empty.show()
+        self.updated.setText("")
+        self.emptyTitle.setText("回复建议已清空")
+        self.emptyHint.setText("聊天记录还在。\n点上方「重新生成」就能换一批，不用等对方再发消息。")
+        self.setupButton.hide()
+        self.set_status(status_text, "idle")
+        self._sync_reply_actions()
+
     def _fill(self, index):
         if self._busy or not self._current or index >= len(self.cands):
             return
@@ -1058,6 +1115,7 @@ class Overlay:
                 self._empty_text()
         for card in self.cards:
             card.set_available(self._current and not busy)
+        self._sync_reply_actions()
 
     def _empty_text(self):
         """空态卡片的默认文案，配好没配好两套说法。"""
@@ -1073,6 +1131,7 @@ class Overlay:
             self.updated.setText("上次建议")
         for card in self.cards:
             card.set_available(False)
+        self._sync_reply_actions()
 
     def set_status(self, text, kind="idle"):
         colors = {"idle": _MUTED, "busy": _GREEN, "success": _GREEN,
@@ -1215,6 +1274,7 @@ class Overlay:
 
     def _follow_text(self):
         self.chatFollow.setText(("跟随" if self._shown == self._chat else "浏览中") if self._chat else "")
+        self._sync_reply_actions()
 
     def show_cached(self, result):
         """把某个会话上次的结果放回界面；没有就回到空态。浏览别的会话时只给看不给填——
@@ -1229,6 +1289,7 @@ class Overlay:
             self.empty.show()
             self.updated.setText("")
             self._empty_text()
+            self._sync_reply_actions()
         if self._shown != self._chat:
             self.invalidate_replies()
             self.set_status(f"正在浏览「{self._shown}」，只看不填；切回这个会话才能用。")
@@ -1274,6 +1335,7 @@ class Overlay:
             self.set_status("建议已更新，选一句适合你的回复", "success")
         else:
             self.set_status("未生成可用回复，请等待下一条新消息。", "error")
+        self._sync_reply_actions()
 
     def _clear_cards(self):
         for card in self.cards:
