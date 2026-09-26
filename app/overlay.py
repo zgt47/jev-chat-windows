@@ -19,7 +19,7 @@ from qfluentwidgets import (
     setCustomStyleSheet, setFont, setTheme, setThemeColor,
 )
 
-from app import chat_profiles, knowledge, settings
+from app import chat_history, chat_profiles, knowledge, persona_skill, settings
 from app.version import VERSION
 from core import jev_client, llm, providers
 from core.questions import CHOICE_LABELS
@@ -166,6 +166,11 @@ class _Fetched(QObject):
 class _Tested(QObject):
     """接口实测结果 → 主线程。"""
     done = Signal(object, bool, str)
+
+
+class _PersonaDistilled(QObject):
+    """个人客服 Skill 蒸馏结果 → 主线程。"""
+    done = Signal(bool, object, str)
 
 
 class _TitleBar(QWidget):
@@ -430,12 +435,14 @@ class Overlay:
         self._build_home()
         self._build_profile()
         self._build_knowledge()
+        self._build_persona()
         self._build_settings()
         self._refresh_profile_summary()
+        self._refresh_persona_summary()
         self.footerBar = QWidget(self.win)
         footer = QHBoxLayout(self.footerBar)
         footer.setContentsMargins(20, 9, 8, 8)
-        footer.addWidget(_label(f"仅填入输入框 · 发送由你确认 · v{VERSION}", 11, _MUTED), 1)
+        footer.addWidget(_label(f"自动发送可选 · v{VERSION}", 11, _MUTED), 1)
         grip = QSizeGrip(self.win)
         grip.setFixedSize(16, 16)
         footer.addWidget(grip, 0, Qt.AlignBottom)
@@ -558,6 +565,17 @@ class Overlay:
         self.knowledgeButton.clicked.connect(self.open_knowledge)
         profile_row.addWidget(self.knowledgeButton)
         body.addLayout(profile_row)
+
+        persona_row = QHBoxLayout()
+        persona_row.setSpacing(8)
+        self.personaSummary = _label("个人客服：未启用", 12, _MUTED)
+        persona_row.addWidget(self.personaSummary, 1)
+        self.personaButton = PushButton("个人客服 Skill")
+        self.personaButton.setToolTip("从你的历史回复中蒸馏口吻和客服处理逻辑")
+        self.personaButton.clicked.connect(self.open_persona)
+        persona_row.addWidget(self.personaButton)
+        body.addLayout(persona_row)
+
         self.targetRow = QWidget()  # 只有开了「群聊指定回复对象」且这个会话是群聊才露出来
         target_row = QHBoxLayout(self.targetRow)
         target_row.setContentsMargins(0, 0, 0, 0)
@@ -965,6 +983,260 @@ class Overlay:
     def open_knowledge(self):
         self._refresh_knowledge()
         self.pages.setCurrentWidget(self.knowledgePage)
+        self.settingsButton.setEnabled(True)
+
+    def _build_persona(self):
+        """个人客服 Skill：固定顶部保存，内容单独滚动。"""
+        self.personaPage = QWidget()
+        page = QVBoxLayout(self.personaPage)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
+
+        fixed_header = QWidget(self.personaPage)
+        fixed_header.setObjectName("personaFixedHeader")
+        fixed_header.setStyleSheet(
+            "QWidget#personaFixedHeader { background:#f5f7f6; border-bottom:1px solid #e1e7e3; }"
+        )
+        header_box = QVBoxLayout(fixed_header)
+        header_box.setContentsMargins(14, 9, 14, 8)
+        header_box.setSpacing(4)
+
+        heading = QHBoxLayout()
+        heading.setSpacing(8)
+        heading.addWidget(_tool(FIF.RETURN, "返回回复建议", self._back_home))
+        heading.addWidget(_label("个人客服 Skill", 23, "#24382d", True), 1)
+        self.personaSaveButton = PrimaryPushButton("保存 Skill")
+        self.personaSaveButton.clicked.connect(self._save_persona)
+        heading.addWidget(self.personaSaveButton)
+        header_box.addLayout(heading)
+
+        self.personaFeedback = _label("", 12, _GREEN)
+        self.personaFeedback.hide()
+        header_box.addWidget(self.personaFeedback)
+        page.addWidget(fixed_header)
+
+        scroll = ScrollArea(self.personaPage)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setAutoFillBackground(False)
+
+        content = QWidget()
+        content.setObjectName("personaPageContent")
+        content.setStyleSheet("QWidget#personaPageContent { background: transparent; }")
+        body = QVBoxLayout(content)
+        body.setContentsMargins(20, 12, 20, 12)
+        body.setSpacing(14)
+        scroll.setWidget(content)
+        page.addWidget(scroll, 1)
+        self.pages.addWidget(self.personaPage)
+        self._pageLayouts.append(body)
+
+        body.addWidget(_label(
+            "从你的真实回复中提取口吻和处理逻辑。蒸馏结果完全可编辑；只有保存并启用后才参与回复。",
+            13, _MUTED
+        ))
+
+        status_card = _Surface()
+        box = QVBoxLayout(status_card)
+        box.setContentsMargins(16, 16, 16, 18)
+        box.setSpacing(10)
+
+        enable_row = QHBoxLayout()
+        enable_row.addWidget(_label("启用个人客服 Skill", 13), 1)
+        self.personaEnabledSwitch = SwitchButton()
+        self.personaEnabledSwitch.setOnText("开")
+        self.personaEnabledSwitch.setOffText("关")
+        enable_row.addWidget(self.personaEnabledSwitch)
+        box.addLayout(enable_row)
+
+        self.personaHistoryState = _label("", 12, _MUTED)
+        box.addWidget(self.personaHistoryState)
+
+        action_row = QHBoxLayout()
+        self.personaDistillButton = PushButton("从本地历史重新蒸馏")
+        self.personaDistillButton.clicked.connect(self._persona_distill_clicked)
+        action_row.addWidget(self.personaDistillButton)
+        action_row.addStretch(1)
+        box.addLayout(action_row)
+        box.addWidget(self._hint(
+            "使用当前“起草模型”分析本机聊天历史；客户消息只当样本，不会当成指令执行。"
+        ))
+        body.addWidget(status_card)
+
+        editor = _Surface()
+        box = QVBoxLayout(editor)
+        box.setContentsMargins(16, 16, 16, 18)
+        box.setSpacing(10)
+
+        box.addWidget(_label("总体画像", 13))
+        self.personaSummaryEdit = PlainTextEdit()
+        self.personaSummaryEdit.setPlaceholderText("例如：说话直接、短句，处理问题先确认事实，不先道歉或承诺")
+        self.personaSummaryEdit.setFixedHeight(72)
+        box.addWidget(self.personaSummaryEdit)
+
+        box.addWidget(_label("口吻规则（每行一条）", 13))
+        self.personaToneEdit = PlainTextEdit()
+        self.personaToneEdit.setFixedHeight(110)
+        box.addWidget(self.personaToneEdit)
+
+        box.addWidget(_label("处理逻辑（每行一条）", 13))
+        self.personaDecisionEdit = PlainTextEdit()
+        self.personaDecisionEdit.setPlaceholderText("例如：信息不足时先问订单号，不先承诺结果")
+        self.personaDecisionEdit.setFixedHeight(135)
+        box.addWidget(self.personaDecisionEdit)
+
+        box.addWidget(_label("常用表达（每行一条）", 13))
+        self.personaCommonEdit = PlainTextEdit()
+        self.personaCommonEdit.setFixedHeight(90)
+        box.addWidget(self.personaCommonEdit)
+
+        box.addWidget(_label("禁用表达（每行一条）", 13))
+        self.personaForbiddenEdit = PlainTextEdit()
+        self.personaForbiddenEdit.setFixedHeight(90)
+        box.addWidget(self.personaForbiddenEdit)
+
+        box.addWidget(_label("代表案例（每行一条）", 13))
+        self.personaExamplesEdit = PlainTextEdit()
+        self.personaExamplesEdit.setPlaceholderText(
+            "客户：什么时候发货？｜我：订单号发我，我看下｜逻辑：先查状态，不先承诺"
+        )
+        self.personaExamplesEdit.setFixedHeight(130)
+        box.addWidget(self.personaExamplesEdit)
+        body.addWidget(editor)
+
+        sample = _Surface()
+        box = QVBoxLayout(sample)
+        box.setContentsMargins(16, 16, 16, 18)
+        box.setSpacing(10)
+        box.addWidget(_label("额外聊天样本（可选）", 13))
+        self.personaExtraEdit = PlainTextEdit()
+        self.personaExtraEdit.setPlaceholderText(
+            "本地历史不够时可以临时粘贴更多聊天。建议使用“对方：… / 我：…”格式；这部分不会另存一份。"
+        )
+        self.personaExtraEdit.setFixedHeight(140)
+        box.addWidget(self.personaExtraEdit)
+        body.addWidget(sample)
+        body.addStretch(1)
+
+        self._personaDistilled = _PersonaDistilled()
+        self._personaDistilled.done.connect(self._persona_distilled)
+
+    @staticmethod
+    def _persona_lines(text):
+        return [x.strip(" -•\t") for x in str(text or "").splitlines() if x.strip(" -•\t")]
+
+    def _persona_feedback(self, text, error=False):
+        color = "#b44832" if error else _GREEN
+        qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
+        setCustomStyleSheet(self.personaFeedback, qss, qss)
+        self.personaFeedback.setText(text)
+        self.personaFeedback.show()
+
+    def _load_persona(self):
+        data = persona_skill.load()
+        self.personaEnabledSwitch.setChecked(data["enabled"])
+        self.personaSummaryEdit.setPlainText(data["summary"])
+        self.personaToneEdit.setPlainText("\n".join(data["tone_rules"]))
+        self.personaDecisionEdit.setPlainText("\n".join(data["decision_rules"]))
+        self.personaCommonEdit.setPlainText("\n".join(data["common_phrases"]))
+        self.personaForbiddenEdit.setPlainText("\n".join(data["forbidden_phrases"]))
+        self.personaExamplesEdit.setPlainText("\n".join(data["examples"]))
+
+        _, stats = chat_history.training_corpus()
+        updated = data.get("updated_at") or "尚未蒸馏"
+        self.personaHistoryState.setText(
+            f"本地历史：{stats['chats']} 个会话 · {stats['messages']} 条消息 · "
+            f"{stats['my_messages']} 条我的回复\nSkill 更新：{updated}"
+        )
+        self.personaFeedback.hide()
+
+    def _save_persona(self):
+        old = persona_skill.load()
+        data = {
+            "enabled": self.personaEnabledSwitch.isChecked(),
+            "summary": self.personaSummaryEdit.toPlainText().strip(),
+            "tone_rules": self._persona_lines(self.personaToneEdit.toPlainText()),
+            "decision_rules": self._persona_lines(self.personaDecisionEdit.toPlainText()),
+            "common_phrases": self._persona_lines(self.personaCommonEdit.toPlainText()),
+            "forbidden_phrases": self._persona_lines(self.personaForbiddenEdit.toPlainText()),
+            "examples": self._persona_lines(self.personaExamplesEdit.toPlainText()),
+            "source_stats": old.get("source_stats", {}),
+        }
+        if data["enabled"] and not any(
+            data[k] for k in ("summary", "tone_rules", "decision_rules", "common_phrases", "examples")
+        ):
+            self._persona_feedback("Skill 还是空的：先蒸馏，或者手动填写规则后再启用。", error=True)
+            return
+        try:
+            persona_skill.save(data)
+        except Exception as exc:
+            self._persona_feedback("保存失败：" + str(exc), error=True)
+            return
+        self._load_persona()
+        self._refresh_persona_summary()
+        self._persona_feedback("个人客服 Skill 已保存，下一次生成回复开始生效。")
+
+    def _persona_distill_clicked(self):
+        corpus, stats = chat_history.training_corpus()
+        extra = self.personaExtraEdit.toPlainText().strip()
+        if not corpus and not extra:
+            self._persona_feedback(
+                "没有可蒸馏的样本。可以先开启本地聊天历史，或者在下面粘贴额外聊天样本。",
+                error=True,
+            )
+            return
+        if not settings.has_llm_key():
+            self._persona_feedback("请先在全局设置里配置起草模型密钥。", error=True)
+            return
+
+        self.personaDistillButton.setEnabled(False)
+        self.personaSaveButton.setEnabled(False)
+        self._persona_feedback("正在蒸馏：提取你的口吻、处理逻辑和代表案例…")
+        threading.Thread(
+            target=self._persona_distill_bg,
+            args=(corpus, extra, stats),
+            daemon=True,
+        ).start()
+
+    def _persona_distill_bg(self, corpus, extra, stats):
+        try:
+            data = persona_skill.distill(corpus, extra, stats)
+        except Exception as exc:
+            self._personaDistilled.done.emit(False, {}, str(exc))
+            return
+        self._personaDistilled.done.emit(True, data, "")
+
+    def _persona_distilled(self, ok, data, reason):
+        self.personaDistillButton.setEnabled(True)
+        self.personaSaveButton.setEnabled(True)
+        if not ok:
+            self._persona_feedback("蒸馏失败：" + reason[:220], error=True)
+            return
+
+        data["enabled"] = True
+        persona_skill.save(data)
+        self._load_persona()
+        self._refresh_persona_summary()
+        stats = data.get("source_stats") or {}
+        self._persona_feedback(
+            f"蒸馏完成：使用了 {stats.get('chats', 0)} 个会话、"
+            f"{stats.get('my_messages', 0)} 条你的回复。可以继续人工修改。"
+        )
+
+    def _refresh_persona_summary(self):
+        data = persona_skill.load()
+        if not data["enabled"]:
+            self.personaSummary.setText("个人客服：未启用")
+            return
+        self.personaSummary.setText(
+            f"个人客服：已启用 · 口吻 {len(data['tone_rules'])} · 逻辑 {len(data['decision_rules'])}"
+        )
+
+    def open_persona(self):
+        self._load_persona()
+        self.pages.setCurrentWidget(self.personaPage)
         self.settingsButton.setEnabled(True)
 
     def _build_settings(self):
