@@ -4,6 +4,7 @@
 只把 Python 解释器和第三方依赖冻结进 JevChat-Dev.exe + _internal；
 main.py / app / core 不进包，发布后从 exe 同目录读取，便于直接替换调试。
 """
+import os
 from PyInstaller.utils.hooks import collect_all
 
 hiddenimports = [
@@ -65,7 +66,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon="docs/icon.ico",
+    icon=os.path.abspath("docs/icon.ico"),
 )
 
 coll = COLLECT(
