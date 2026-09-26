@@ -9,8 +9,9 @@ from types import SimpleNamespace
 from PySide6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QMenu, QPushButton, QScrollArea as NativeScrollArea,
-    QSlider, QSizeGrip, QSizePolicy, QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QMenu, QMessageBox, QPushButton,
+    QScrollArea as NativeScrollArea, QSlider, QSizeGrip, QSizePolicy, QStackedWidget, QStyle,
+    QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
     BodyLabel, CardWidget, CheckBox, ComboBox, EditableComboBox, FluentIcon as FIF,
@@ -20,6 +21,7 @@ from qfluentwidgets import (
 )
 
 from app import chat_history, chat_profiles, knowledge, persona_skill, settings
+from app.services.edit_guard import EditGuard
 from app.version import VERSION
 from core import jev_client, llm, providers
 from core.questions import CHOICE_LABELS
@@ -350,6 +352,8 @@ class Overlay:
         self._compact = None  # 断点模式：None 保证 _relayout 第一次调用必定生效
         self._pageLayouts = []
         self._hintLabels = []
+        self._editGuard = EditGuard()
+        self._guardingUnsaved = False
         self.feeds = {}  # {会话名: [排好版的记录]}
         self.counts = {}  # {会话名: 消息条数}
         self.hers = {}  # {会话名: 对方最近一句}
@@ -945,6 +949,13 @@ class Overlay:
         items = getattr(self, "_knowledge_items", [])
         if not 0 <= index < len(items):
             return
+        previous = getattr(self, "_knowledgeSelectedIndex", index)
+        if index != previous and self._has_unsaved_changes(self.knowledgePage):
+            self.knowledgeList.blockSignals(True)
+            self.knowledgeList.setCurrentIndex(previous)
+            self.knowledgeList.blockSignals(False)
+            self._ask_unsaved(self.knowledgePage)
+            return
         note = items[index]
         self._knowledge_id = note["id"]
         self.knowledgeTitleEdit.setText(note["title"])
@@ -952,8 +963,13 @@ class Overlay:
         self.knowledgeContentEdit.setPlainText(note["content"])
         self.knowledgeAlwaysCheck.setChecked(note["always_on"])
         self.knowledgeEnabledCheck.setChecked(note["enabled"])
+        self._knowledgeSelectedIndex = index
+        self._mark_edit_clean(self.knowledgePage)
 
     def _knowledge_new(self):
+        if self.pages.currentWidget() == getattr(self, "knowledgePage", None) and self._has_unsaved_changes(self.knowledgePage):
+            self._ask_unsaved(self.knowledgePage)
+            return
         self._knowledge_id = None
         self.knowledgeTitleEdit.clear()
         self.knowledgeTagsEdit.clear()
@@ -961,6 +977,8 @@ class Overlay:
         self.knowledgeAlwaysCheck.setChecked(False)
         self.knowledgeEnabledCheck.setChecked(True)
         self.knowledgeFeedback.hide()
+        self._knowledgeSelectedIndex = -1
+        self._mark_edit_clean(self.knowledgePage)
 
     def _knowledge_save(self):
         raw_tags = self.knowledgeTagsEdit.text().replace("，", ",").replace("、", ",")
@@ -983,6 +1001,9 @@ class Overlay:
         self.knowledgeFeedback.show()
 
     def _knowledge_delete(self):
+        if self._has_unsaved_changes(self.knowledgePage):
+            self._ask_unsaved(self.knowledgePage)
+            return
         if not self._knowledge_id:
             return
         knowledge.delete_note(self._knowledge_id)
@@ -991,6 +1012,8 @@ class Overlay:
         self.knowledgeFeedback.show()
 
     def open_knowledge(self):
+        if self.pages.currentWidget() != self.home and not self._prepare_module_open():
+            return
         self._refresh_knowledge()
         self.pages.setCurrentWidget(self.knowledgePage)
         self.settingsButton.setEnabled(True)
@@ -1205,10 +1228,22 @@ class Overlay:
 
     def _persona_selected(self, index):
         ids = getattr(self, "_personaListIds", [])
-        if 0 <= index < len(ids):
-            self._load_persona(ids[index])
+        if not 0 <= index < len(ids):
+            return
+        previous = getattr(self, "_personaSelectedIndex", index)
+        if index != previous and self._has_unsaved_changes(self.personaPage):
+            self.personaListBox.blockSignals(True)
+            self.personaListBox.setCurrentIndex(previous)
+            self.personaListBox.blockSignals(False)
+            self._ask_unsaved(self.personaPage)
+            return
+        self._personaSelectedIndex = index
+        self._load_persona(ids[index])
 
     def _persona_new(self):
+        if self.pages.currentWidget() == getattr(self, "personaPage", None) and self._has_unsaved_changes(self.personaPage):
+            self._ask_unsaved(self.personaPage)
+            return
         self._personaCurrentId = None
         self._personaPendingRole = "custom"
         self._personaPendingStats = {}
@@ -1226,8 +1261,13 @@ class Overlay:
         self.personaDefaultButton.setEnabled(False)
         self.personaFeedback.hide()
         self.personaNameEdit.setFocus()
+        self._personaSelectedIndex = -1
+        self._mark_edit_clean(self.personaPage)
 
     def _persona_delete(self):
+        if self._has_unsaved_changes(self.personaPage):
+            self._ask_unsaved(self.personaPage)
+            return
         skill_id = getattr(self, "_personaCurrentId", None)
         if not skill_id:
             return
@@ -1242,6 +1282,9 @@ class Overlay:
         self._persona_feedback("已删除这个人格。")
 
     def _persona_set_default(self):
+        if self._has_unsaved_changes(self.personaPage):
+            self._ask_unsaved(self.personaPage)
+            return
         skill_id = getattr(self, "_personaCurrentId", None)
         if not skill_id:
             self._persona_feedback("先保存这个人格，再设为默认。", error=True)
@@ -1280,6 +1323,11 @@ class Overlay:
         self.personaDeleteButton.setEnabled(bool(data.get("id")))
         self.personaDefaultButton.setEnabled(bool(data.get("id")) and data.get("id") != persona_skill.default_id())
         self.personaFeedback.hide()
+        try:
+            self._personaSelectedIndex = self._personaListIds.index(data.get("id"))
+        except (ValueError, AttributeError):
+            self._personaSelectedIndex = -1
+        self._mark_edit_clean(self.personaPage)
 
     def _save_persona(self):
         current_id = getattr(self, "_personaCurrentId", None)
@@ -1329,6 +1377,9 @@ class Overlay:
         self._personaPendingRole = data.get("role") or "custom"
 
     def _persona_import_clicked(self):
+        if self._has_unsaved_changes(self.personaPage):
+            self._ask_unsaved(self.personaPage)
+            return
         path, _ = QFileDialog.getOpenFileName(
             self.win,
             "导入 Jev 人格 Skill",
@@ -1352,6 +1403,9 @@ class Overlay:
         )
 
     def _persona_distill_clicked(self):
+        if self._has_unsaved_changes(self.personaPage):
+            self._ask_unsaved(self.personaPage)
+            return
         corpus, stats = chat_history.training_corpus()
         extra = self.personaExtraEdit.toPlainText().strip()
         if not corpus and not extra:
@@ -1416,6 +1470,8 @@ class Overlay:
         )
 
     def open_persona(self):
+        if self.pages.currentWidget() != self.home and not self._prepare_module_open():
+            return
         self._refresh_persona_list()
         self.pages.setCurrentWidget(self.personaPage)
         self.settingsButton.setEnabled(True)
@@ -1872,6 +1928,8 @@ class Overlay:
         group.status.setText("")
 
     def _load_settings(self):
+        self.jev.keyEdit.clear()
+        self.draft.keyEdit.clear()
         self.contextBox.setValue(settings.context())
         self.autoAnalyzeSwitch.setChecked(settings.auto_analyze())
         self.autoSendDelayBox.setValue(settings.auto_send_delay())
@@ -1895,6 +1953,7 @@ class Overlay:
         self.set_debug_switch(settings.debug_view())
         self._sync_model_fields()
         self.settingsFeedback.hide()
+        self._mark_edit_clean(self.settingsPage)
 
     def _save(self):
         jev_provider = self._provider_of(self.jev)
@@ -2025,6 +2084,7 @@ class Overlay:
             state = "这个会话尚未单独设置，当前使用默认关系「朋友」。"
         self.profileStateLabel.setText(state)
         self.profileFeedback.hide()
+        self._mark_edit_clean(self.profilePage)
 
     def _save_profile(self):
         chat = self._shown or self._chat
@@ -2104,6 +2164,8 @@ class Overlay:
         self.profileSummary.setText(f"关系：{name} · {type_name}{suffix}")
 
     def open_profile(self):
+        if self.pages.currentWidget() != self.home and not self._prepare_module_open():
+            return
         self._load_profile()
         self.pages.setCurrentWidget(self.profilePage)
         self.settingsButton.setEnabled(True)
@@ -2121,6 +2183,185 @@ class Overlay:
         self.debugSwitch.setChecked(on)
         self.debugSwitch.blockSignals(False)
 
+    def _edit_state(self, page=None):
+        """取编辑页当前可保存内容的快照；即时保存型开关不放进来。"""
+        page = page or self.pages.currentWidget()
+
+        if page == getattr(self, "settingsPage", None):
+            return (
+                self.contextBox.value(),
+                self.autoAnalyzeSwitch.isChecked(),
+                self.autoSendDelayBox.value(),
+                self.whitelistEdit.toPlainText(),
+                self.transparencySlider.value(),
+                self.historySwitch.isChecked(),
+                self.historyLimitBox.value(),
+                self.targetSwitch.isChecked(),
+                self._provider_of(self.jev),
+                self.jev.baseEdit.text().strip(),
+                self.jev.keyEdit.text(),
+                self.jev.modelBox.text().strip(),
+                self._provider_of(self.draft),
+                self.draft.baseEdit.text().strip(),
+                self.draft.keyEdit.text(),
+                self.draft.modelBox.text().strip(),
+                self.thinkingSwitch.isChecked(),
+                self.updateSwitch.isChecked(),
+            )
+
+        if page == getattr(self, "profilePage", None):
+            persona_index = self.profilePersonaBox.currentIndex()
+            persona_id = (
+                self._profilePersonaIds[persona_index]
+                if 0 <= persona_index < len(getattr(self, "_profilePersonaIds", []))
+                else persona_skill.DEFAULT_PERSONA
+            )
+            return (
+                self._shown or self._chat,
+                self.profileRelationshipBox.currentIndex(),
+                self.profileRelEdit.text(),
+                self.profileChatTypeBox.currentIndex(),
+                self.profileStyleBox.currentIndex(),
+                self.profileStyleEdit.text(),
+                persona_id,
+                self.profileAliasesEdit.toPlainText(),
+                self.profileNotesEdit.toPlainText(),
+            )
+
+        if page == getattr(self, "knowledgePage", None):
+            return (
+                self._knowledge_id,
+                self.knowledgeTitleEdit.text(),
+                self.knowledgeTagsEdit.text(),
+                self.knowledgeContentEdit.toPlainText(),
+                self.knowledgeAlwaysCheck.isChecked(),
+                self.knowledgeEnabledCheck.isChecked(),
+            )
+
+        if page == getattr(self, "personaPage", None):
+            return (
+                getattr(self, "_personaCurrentId", None),
+                self.personaNameEdit.text(),
+                self.personaEnabledSwitch.isChecked(),
+                self.personaSummaryEdit.toPlainText(),
+                self.personaToneEdit.toPlainText(),
+                self.personaDecisionEdit.toPlainText(),
+                self.personaCommonEdit.toPlainText(),
+                self.personaForbiddenEdit.toPlainText(),
+                self.personaExamplesEdit.toPlainText(),
+                getattr(self, "_personaPendingRole", "custom"),
+            )
+
+        return None
+
+    def _edit_key(self, page=None):
+        page = page or self.pages.currentWidget()
+        if page == getattr(self, "settingsPage", None):
+            return "settings"
+        if page == getattr(self, "profilePage", None):
+            return "profile"
+        if page == getattr(self, "knowledgePage", None):
+            return "knowledge"
+        if page == getattr(self, "personaPage", None):
+            return "persona"
+        return ""
+
+    def _mark_edit_clean(self, page=None):
+        page = page or self.pages.currentWidget()
+        key = self._edit_key(page)
+        if key:
+            self._editGuard.mark_clean(key, self._edit_state(page))
+
+    def _has_unsaved_changes(self, page=None):
+        page = page or self.pages.currentWidget()
+        key = self._edit_key(page)
+        return bool(key and self._editGuard.is_dirty(key, self._edit_state(page)))
+
+    def _reload_current_editor(self, page=None):
+        """丢弃当前页未保存内容，恢复磁盘里的最后保存状态。"""
+        page = page or self.pages.currentWidget()
+        if page == getattr(self, "settingsPage", None):
+            self._load_settings()
+            self._apply_transparency(settings.transparency())
+        elif page == getattr(self, "profilePage", None):
+            self._load_profile()
+        elif page == getattr(self, "knowledgePage", None):
+            current = self._knowledge_id
+            self._refresh_knowledge(current)
+        elif page == getattr(self, "personaPage", None):
+            current = getattr(self, "_personaCurrentId", None)
+            self._refresh_persona_list(current)
+
+    def _save_current_editor(self, page=None):
+        """保存当前编辑页。保存失败时页面仍保持脏状态。"""
+        page = page or self.pages.currentWidget()
+        if page == getattr(self, "settingsPage", None):
+            self._save()
+        elif page == getattr(self, "profilePage", None):
+            self._save_profile()
+        elif page == getattr(self, "knowledgePage", None):
+            self._knowledge_save()
+        elif page == getattr(self, "personaPage", None):
+            self._save_persona()
+
+    def _ask_unsaved(self, page=None):
+        """只提供“保存 / 退出”两个选择。
+
+        返回：
+        - clean: 没有未保存修改
+        - saved: 用户选择保存；本次离开/切换必须停止
+        - exit: 用户选择退出；丢弃修改
+        """
+        page = page or self.pages.currentWidget()
+        if not self._has_unsaved_changes(page):
+            return "clean"
+        if self._guardingUnsaved:
+            return "saved"
+
+        self._guardingUnsaved = True
+        try:
+            box = QMessageBox(self.win)
+            box.setWindowTitle("未保存修改")
+            box.setIcon(QMessageBox.Warning)
+            box.setText("当前修改尚未保存。")
+            box.setInformativeText(
+                "保存：只保存并留在当前页面。\n"
+                "退出：放弃本次修改。刚才的切换不会继续，需要你再点一次。"
+            )
+            save_btn = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+            exit_btn = box.addButton("退出", QMessageBox.ButtonRole.DestructiveRole)
+            box.setDefaultButton(save_btn)
+            box.setWindowFlag(Qt.WindowCloseButtonHint, False)
+            box.exec()
+
+            if box.clickedButton() is save_btn:
+                self._save_current_editor(page)
+                return "saved"
+
+            self._reload_current_editor(page)
+            return "exit"
+        finally:
+            self._guardingUnsaved = False
+
+    def _go_home(self):
+        """无额外判断地回首页。"""
+        if self.pages.currentWidget() == getattr(self, "settingsPage", None):
+            self._apply_transparency(settings.transparency())
+        self.jev.keyEdit.clear()
+        self.draft.keyEdit.clear()
+        self.pages.setCurrentWidget(self.home)
+        self.settingsButton.setEnabled(True)
+
+    def _prepare_module_open(self):
+        """从一个编辑模块去另一个模块时，第一次点击只解决未保存状态。"""
+        outcome = self._ask_unsaved()
+        if outcome == "clean":
+            return True
+        if outcome == "exit":
+            self._go_home()
+        # saved / exit 都不继续刚才那个模块跳转。
+        return False
+
     def _settings_feedback(self, text, error=False):
         color = "#b44832" if error else _GREEN
         qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
@@ -2129,19 +2370,20 @@ class Overlay:
         self.settingsFeedback.show()
 
     def open_settings(self):
-        if self.pages.currentWidget() != self.settingsPage:
-            self._load_settings()
+        if self.pages.currentWidget() == self.settingsPage:
+            return
+        if self.pages.currentWidget() != self.home and not self._prepare_module_open():
+            return
+        self._load_settings()
         self.pages.setCurrentWidget(self.settingsPage)
         self.settingsButton.setEnabled(False)
         (self.contextBox if settings.has_key() else self.jev.keyEdit).setFocus()
 
     def _back_home(self):
-        if self.pages.currentWidget() == self.settingsPage:
-            self._apply_transparency(settings.transparency())
-        self.jev.keyEdit.clear()
-        self.draft.keyEdit.clear()
-        self.pages.setCurrentWidget(self.home)
-        self.settingsButton.setEnabled(True)
+        outcome = self._ask_unsaved()
+        if outcome == "saved":
+            return
+        self._go_home()
 
     def _auto_send_toggled(self, on):
         """首页快捷开关：立即保存，客服模式不必再进入设置页。"""
@@ -2446,8 +2688,11 @@ class Overlay:
             pass
 
     def _collapse_page(self):
-        """右上角 × / Alt+F4：主界面收成独立悬浮球。"""
+        """右上角 × / Alt+F4：有未保存修改时先只处理保存问题。"""
         if self._collapsed:
+            return
+        outcome = self._ask_unsaved()
+        if outcome == "saved":
             return
         self._save_window_state()
         self._expandedSize = self.win.size()
@@ -2543,6 +2788,10 @@ class Overlay:
         menu.exec(global_pos)
 
     def _quit_app(self):
+        if not self._collapsed:
+            outcome = self._ask_unsaved()
+            if outcome == "saved":
+                return
         self._force_quit = True
         self._save_window_state()
         if self._collapsed:
